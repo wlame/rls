@@ -1,4 +1,4 @@
-module github.com/umputun/rls
+module github.com/wlame/rls
 
 go 1.22.2
 

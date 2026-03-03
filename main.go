@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/umputun/rls/config"
+	"github.com/wlame/rls/config"
 )
 
 func main() {
