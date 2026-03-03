@@ -207,3 +207,49 @@ func TestLoad_ServerDefaults(t *testing.T) {
 		t.Errorf("default port: got %d, want 8080", cfg.Server.Port)
 	}
 }
+
+// --- merge tests ---
+
+func TestMergeOverrides_Port(t *testing.T) {
+	cfg := &Config{Server: ServerConfig{Host: "0.0.0.0", Port: 8080}}
+	if err := MergeOverrides(cfg, map[string]string{"port": "9999"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.Port != 9999 {
+		t.Errorf("port: got %d, want 9999", cfg.Server.Port)
+	}
+}
+
+func TestMergeOverrides_Host(t *testing.T) {
+	cfg := &Config{Server: ServerConfig{Host: "0.0.0.0", Port: 8080}}
+	if err := MergeOverrides(cfg, map[string]string{"host": "127.0.0.1"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.Host != "127.0.0.1" {
+		t.Errorf("host: got %q, want 127.0.0.1", cfg.Server.Host)
+	}
+}
+
+func TestMergeOverrides_InvalidPort(t *testing.T) {
+	cfg := &Config{}
+	if err := MergeOverrides(cfg, map[string]string{"port": "notanumber"}); err == nil {
+		t.Fatal("expected error for invalid port, got nil")
+	}
+}
+
+func TestMergeOverrides_UnknownKey(t *testing.T) {
+	cfg := &Config{}
+	if err := MergeOverrides(cfg, map[string]string{"unknown": "value"}); err == nil {
+		t.Fatal("expected error for unknown key, got nil")
+	}
+}
+
+func TestMergeOverrides_Empty(t *testing.T) {
+	cfg := &Config{Server: ServerConfig{Host: "1.2.3.4", Port: 1234}}
+	if err := MergeOverrides(cfg, map[string]string{}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.Host != "1.2.3.4" || cfg.Server.Port != 1234 {
+		t.Error("empty overrides should not change config")
+	}
+}
