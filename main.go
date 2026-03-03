@@ -7,10 +7,10 @@ import (
 	"os"
 
 	"github.com/wlame/rls/config"
+	"github.com/wlame/rls/server"
 )
 
 func main() {
-	// Define flags directly so flag.Parse() picks them up.
 	cfgPath := flag.String("config", "rls.yml", "path to config file")
 	port := flag.Int("port", 0, "override server port")
 	host := flag.String("host", "", "override server host")
@@ -30,8 +30,15 @@ func main() {
 		cfg = defaultConfig()
 	}
 
-	fmt.Printf("rls starting on %s:%d\n", cfg.Server.Host, cfg.Server.Port)
-	_ = cfg
+	srv, err := server.New(*cfg)
+	if err != nil {
+		log.Fatalf("create server: %v", err)
+	}
+
+	log.Printf("rls listening on %s:%d", cfg.Server.Host, cfg.Server.Port)
+	if err := srv.Start(); err != nil {
+		log.Fatalf("server error: %v", err)
+	}
 }
 
 func loadConfig(path string, overrides map[string]string) (*config.Config, error) {
@@ -54,6 +61,6 @@ func defaultConfig() *config.Config {
 }
 
 func init() {
-	log.SetFlags(0)
+	log.SetFlags(log.LstdFlags)
 	log.SetOutput(os.Stderr)
 }
