@@ -28,6 +28,10 @@ func main() {
 	if err != nil {
 		log.Printf("warning: %v — using built-in defaults", err)
 		cfg = defaultConfig()
+		// Still apply CLI overrides (port/host) on top of defaults.
+		if mergeErr := config.MergeOverrides(cfg, overrides); mergeErr != nil {
+			log.Fatalf("invalid flags: %v", mergeErr)
+		}
 	}
 
 	srv, err := server.New(*cfg)
