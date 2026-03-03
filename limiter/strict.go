@@ -1,6 +1,9 @@
 package limiter
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // StrictLimiter fires at exactly 1/rps intervals using time.Ticker.
 type StrictLimiter struct {
@@ -13,8 +16,13 @@ func NewStrict(rps float64) *StrictLimiter {
 	return &StrictLimiter{ticker: time.NewTicker(interval)}
 }
 
-func (l *StrictLimiter) Tick() <-chan time.Time {
-	return l.ticker.C
+func (l *StrictLimiter) Wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-l.ticker.C:
+		return nil
+	}
 }
 
 func (l *StrictLimiter) Stop() {

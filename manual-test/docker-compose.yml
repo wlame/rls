@@ -1,0 +1,20 @@
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: ["--config=/etc/rls/rls.yml"]
+    volumes:
+      - ./rls.yml:/etc/rls/rls.yml:ro
+    ports:
+      - "8080:8080"
+
+  client:
+    build:
+      context: ./client
+    depends_on:
+      - server
+    environment:
+      - RLS_HOST=server:8080
+    # Override CMD to run a specific script, e.g.:
+    #   docker compose run client /scripts/02-burst.sh

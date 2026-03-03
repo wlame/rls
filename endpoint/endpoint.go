@@ -3,6 +3,7 @@ package endpoint
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -14,11 +15,12 @@ import (
 
 // Endpoint manages a single rate-limited path.
 type Endpoint struct {
-	cfg     config.EndpointConfig
-	queue   queue.Queue
-	lim     limiter.Limiter
-	ctx     context.Context
-	cancel  context.CancelFunc
+	cfg    config.EndpointConfig
+	queue  queue.Queue
+	lim    limiter.Limiter
+	work   chan struct{} // signals dispatch that a ticket was just pushed
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // New creates an Endpoint from its configuration, starts the dispatcher goroutine,
@@ -42,6 +44,7 @@ func New(cfg config.EndpointConfig) (*Endpoint, error) {
 		cfg:    cfg,
 		queue:  q,
 		lim:    l,
+		work:   make(chan struct{}, cfg.MaxQueueSize),
 		ctx:    ctx,
 		cancel: cancel,
 	}
@@ -49,17 +52,24 @@ func New(cfg config.EndpointConfig) (*Endpoint, error) {
 	return ep, nil
 }
 
-// dispatch runs the rate-limited dispatch loop: on each limiter tick,
-// pop the next queued ticket and signal its release channel.
+// dispatch runs the rate-limited dispatch loop: wait for a queued ticket,
+// then call Wait() on the limiter to consume one slot before releasing it.
+// Waiting for work before calling Wait() is critical for burst-capable limiters
+// (token bucket): Wait() only consumes a token when a request is actually ready.
 func (e *Endpoint) dispatch() {
 	for {
+		// Block until a ticket has been pushed into the queue.
 		select {
 		case <-e.ctx.Done():
 			return
-		case <-e.lim.Tick():
-			if t := e.queue.Pop(); t != nil {
-				t.Release <- struct{}{}
-			}
+		case <-e.work:
+		}
+		// Consume one rate-limiter slot, then release the ticket.
+		if err := e.lim.Wait(e.ctx); err != nil {
+			return
+		}
+		if t := e.queue.Pop(); t != nil {
+			t.Release <- struct{}{}
 		}
 	}
 }
@@ -93,6 +103,10 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Notify the dispatcher that a ticket is ready.
+	// Non-blocking: work is sized to MaxQueueSize so it can never be full
+	// when a push just succeeded.
+	e.work <- struct{}{}
 
 	// Block until the dispatcher releases this ticket.
 	select {
@@ -103,6 +117,16 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := buildResponse(e.cfg, e.queue.Len(), ticket.EnqueuedAt)
+	req := r.URL.RawQuery
+	if req == "" {
+		req = "-"
+	}
+	log.Printf("%s  serve  %-12s  waited=%6dms  queue=%2d  rate=%.0f%s  [%s/%s]  %s",
+		time.Now().Format("2006-01-02 15:04:05.000"),
+		resp.Endpoint, resp.QueuedForMs, resp.QueueDepth,
+		resp.Rate, resp.Unit,
+		resp.Scheduler, resp.Algorithm,
+		req)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(resp) //nolint:errcheck

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -234,6 +235,80 @@ func TestRegistry_NoMatch(t *testing.T) {
 	if ok {
 		t.Fatal("expected no match for /other when only /api configured")
 	}
+}
+
+// --- Token bucket burst regression ---
+
+// TestEndpoint_TokenBucket_BurstPreservedWhenQueueIdle is a regression test for
+// the bug where dispatch() consumed burst tokens from the limiter while the queue
+// was empty, so all tokens were wasted before any request arrived.
+//
+// Setup: burst=5, rate=1 RPS. After a 200ms idle pause (long enough for the old
+// buggy code to drain all pre-filled tokens), fire 7 concurrent requests.
+// The first 5 must complete quickly (burst), the remaining 2 must each wait ~1s.
+func TestEndpoint_TokenBucket_BurstPreservedWhenQueueIdle(t *testing.T) {
+	const burst = 5
+	cfg := config.EndpointConfig{
+		Path:         "/burst",
+		Rate:         1, // slow post-burst rate makes throttling easy to detect
+		Unit:         "rps",
+		Scheduler:    "fifo",
+		Algorithm:    "token_bucket",
+		BurstSize:    burst,
+		MaxQueueSize: 20,
+		Overflow:     "reject",
+	}
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer ep.Stop()
+
+	// Idle pause: in the old buggy code, dispatch() would drain all burst tokens
+	// here because it consumed ticks even when the queue was empty.
+	// In the fixed code, burst tokens stay available until requests arrive.
+	time.Sleep(200 * time.Millisecond)
+
+	const total = burst + 2
+	type result struct{ elapsed time.Duration }
+	results := make(chan result, total)
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < total; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/burst", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+			results <- result{elapsed: time.Since(start)}
+		}()
+	}
+	wg.Wait()
+	close(results)
+
+	elapseds := make([]time.Duration, 0, total)
+	for r := range results {
+		elapseds = append(elapseds, r.elapsed)
+	}
+	sort.Slice(elapseds, func(i, j int) bool { return elapseds[i] < elapseds[j] })
+
+	// First 'burst' responses must arrive well within one rate interval (1s).
+	for i := 0; i < burst; i++ {
+		if elapseds[i] >= 500*time.Millisecond {
+			t.Errorf("burst request %d: took %v, want <500ms (burst tokens wasted)", i+1, elapseds[i])
+		}
+	}
+	// Remaining responses must wait significantly longer than burst requests.
+	// With a 200ms idle head-start, the first throttled token arrives at ~800ms,
+	// so we use 700ms as the lower bound (leaves 100ms margin for timing variance).
+	for i := burst; i < total; i++ {
+		if elapseds[i] < 700*time.Millisecond {
+			t.Errorf("throttled request %d: took %v, want ≥700ms", i+1, elapseds[i])
+		}
+	}
+	t.Logf("burst=%v throttled=%v", elapseds[:burst], elapseds[burst:])
 }
 
 func TestRegistry_LongestPrefixWins(t *testing.T) {

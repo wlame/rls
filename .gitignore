@@ -1,5 +1,6 @@
 docs
 .claude/
+.serena/
 rls
 .env
 *.env

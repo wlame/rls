@@ -1,49 +1,38 @@
 package limiter
 
 import (
+	"context"
 	"sync"
 	"time"
 )
 
-// SlidingWindowLimiter tracks timestamps in a ring buffer and fires when
+// SlidingWindowLimiter tracks timestamps in a ring buffer and grants a slot when
 // the rate within the window allows a new request.
 type SlidingWindowLimiter struct {
 	rps    float64
 	window time.Duration
 	mu     sync.Mutex
 	times  []time.Time // ring buffer of recent grant times
-	ch     chan time.Time
-	stop   chan struct{}
 }
 
 // NewSlidingWindow creates a SlidingWindowLimiter with the given rps and window length in seconds.
 func NewSlidingWindow(rps float64, windowSeconds int) *SlidingWindowLimiter {
-	l := &SlidingWindowLimiter{
+	return &SlidingWindowLimiter{
 		rps:    rps,
 		window: time.Duration(windowSeconds) * time.Second,
-		ch:     make(chan time.Time, 1),
-		stop:   make(chan struct{}),
 	}
-	go l.run()
-	return l
 }
 
-func (l *SlidingWindowLimiter) run() {
-	// Poll frequently; grant a tick when the window allows.
-	poll := time.NewTicker(time.Millisecond)
-	defer poll.Stop()
+// Wait blocks until a slot is available within the sliding window or ctx is cancelled.
+func (l *SlidingWindowLimiter) Wait(ctx context.Context) error {
 	for {
+		if l.tryGrant(time.Now()) {
+			return nil
+		}
 		select {
-		case <-l.stop:
-			return
-		case now := <-poll.C:
-			if l.tryGrant(now) {
-				select {
-				case l.ch <- now:
-				case <-l.stop:
-					return
-				}
-			}
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Millisecond):
 		}
 	}
 }
@@ -73,10 +62,4 @@ func (l *SlidingWindowLimiter) tryGrant(now time.Time) bool {
 	return false
 }
 
-func (l *SlidingWindowLimiter) Tick() <-chan time.Time {
-	return l.ch
-}
-
-func (l *SlidingWindowLimiter) Stop() {
-	close(l.stop)
-}
+func (l *SlidingWindowLimiter) Stop() {}

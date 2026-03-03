@@ -1,6 +1,7 @@
 package limiter
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -8,25 +9,24 @@ import (
 // --- StrictLimiter tests ---
 
 func TestStrict_FiresAtApproximateRate(t *testing.T) {
-	// 10 RPS → expect ~5 ticks in 500ms (±2 tolerance)
+	// 10 RPS → expect ~5 waits in 500ms (±2 tolerance)
 	l := NewStrict(10)
 	defer l.Stop()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
 	count := 0
-	deadline := time.After(500 * time.Millisecond)
-loop:
 	for {
-		select {
-		case <-l.Tick():
-			count++
-		case <-deadline:
-			break loop
+		if err := l.Wait(ctx); err != nil {
+			break
 		}
+		count++
 	}
 
-	// Expect 4–6 ticks (10 RPS × 0.5s = 5, ±20%)
+	// Expect 4–6 (10 RPS × 0.5s = 5, ±20%)
 	if count < 3 || count > 7 {
-		t.Errorf("strict 10 RPS: got %d ticks in 500ms, want ~5", count)
+		t.Errorf("strict 10 RPS: got %d in 500ms, want ~5", count)
 	}
 }
 
@@ -39,24 +39,23 @@ func TestStrict_Stop_DoesNotPanic(t *testing.T) {
 // --- TokenBucketLimiter tests ---
 
 func TestTokenBucket_BurstReleasesUpToN(t *testing.T) {
-	// burst=5 means up to 5 ticks available immediately.
+	// burst=5 means up to 5 slots available immediately.
 	l := NewTokenBucket(100, 5)
 	defer l.Stop()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
 	count := 0
-	timeout := time.After(100 * time.Millisecond)
-loop:
 	for {
-		select {
-		case <-l.Tick():
-			count++
-		case <-timeout:
-			break loop
+		if err := l.Wait(ctx); err != nil {
+			break
 		}
+		count++
 	}
-	// With burst=5 and 100 RPS, 100ms window: expect 5+ ticks.
+	// With burst=5 and 100 RPS, 100ms window: expect 5+ grants.
 	if count < 5 {
-		t.Errorf("token bucket burst=5: got %d ticks, want ≥5", count)
+		t.Errorf("token bucket burst=5: got %d in 100ms, want ≥5", count)
 	}
 }
 
@@ -65,51 +64,48 @@ func TestTokenBucket_ThrottlesAfterBurst(t *testing.T) {
 	l := NewTokenBucket(2, 2)
 	defer l.Stop()
 
+	ctx := context.Background()
+
 	// drain burst
 	for i := 0; i < 2; i++ {
-		select {
-		case <-l.Tick():
-		case <-time.After(200 * time.Millisecond):
-			t.Fatalf("burst tick %d timed out", i+1)
+		if err := l.Wait(ctx); err != nil {
+			t.Fatalf("burst wait %d failed: %v", i+1, err)
 		}
 	}
 
-	// next tick should take ~500ms
+	// next should take ~500ms
 	start := time.Now()
-	select {
-	case <-l.Tick():
-		elapsed := time.Since(start)
-		if elapsed < 400*time.Millisecond {
-			t.Errorf("expected ≥400ms for next tick after burst, got %v", elapsed)
-		}
-	case <-time.After(time.Second):
-		t.Error("timeout waiting for post-burst tick")
+	if err := l.Wait(ctx); err != nil {
+		t.Fatalf("post-burst wait failed: %v", err)
+	}
+	elapsed := time.Since(start)
+	if elapsed < 400*time.Millisecond {
+		t.Errorf("expected ≥400ms for next wait after burst, got %v", elapsed)
 	}
 }
 
 // --- SlidingWindowLimiter tests ---
 
 func TestSlidingWindow_RateWithinWindow(t *testing.T) {
-	// 5 RPS, 1-second window: in any 1-second slice, at most 5 ticks should fire.
+	// 5 RPS, 1-second window: in any 1-second slice, at most 5 grants.
 	// We measure over 2 seconds and expect ~10 total (±4 for timing).
 	l := NewSlidingWindow(5, 1)
 	defer l.Stop()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
 	count := 0
-	deadline := time.After(2 * time.Second)
-loop:
 	for {
-		select {
-		case <-l.Tick():
-			count++
-		case <-deadline:
-			break loop
+		if err := l.Wait(ctx); err != nil {
+			break
 		}
+		count++
 	}
 
-	// Expect 6–14 ticks (5 RPS × 2s = 10, ±40% tolerance for CI timing)
+	// Expect 6–14 grants (5 RPS × 2s = 10, ±40% tolerance for CI timing)
 	if count < 6 || count > 14 {
-		t.Errorf("sliding window 5 RPS/1s over 2s: got %d ticks, want ~10", count)
+		t.Errorf("sliding window 5 RPS/1s over 2s: got %d, want ~10", count)
 	}
 }
 
@@ -156,12 +152,17 @@ func TestNew_RPMUnit(t *testing.T) {
 	}
 	defer l.Stop()
 
-	// Should fire approximately once per second
+	ctx, cancel := context.WithTimeout(context.Background(), 1200*time.Millisecond)
+	defer cancel()
+
+	// Should grant within one second
 	start := time.Now()
-	<-l.Tick()
+	if err := l.Wait(ctx); err != nil {
+		t.Fatalf("wait failed: %v", err)
+	}
 	elapsed := time.Since(start)
 	if elapsed > 1200*time.Millisecond {
-		t.Errorf("first tick took %v, expected ≤1200ms for 60 RPM", elapsed)
+		t.Errorf("first wait took %v, expected ≤1200ms for 60 RPM", elapsed)
 	}
 }
 

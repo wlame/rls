@@ -1,15 +1,15 @@
 package limiter
 
 import (
+	"context"
 	"fmt"
-	"time"
 )
 
 // Limiter controls when rate-limited slots are made available.
 type Limiter interface {
-	// Tick returns a channel that fires each time a request slot is available.
-	// One receive = one request may proceed.
-	Tick() <-chan time.Time
+	// Wait blocks until a request slot is available or ctx is cancelled.
+	// Returns ctx.Err() if the context is cancelled, nil otherwise.
+	Wait(ctx context.Context) error
 	// Stop releases resources (stops ticker goroutines, etc.)
 	Stop()
 }

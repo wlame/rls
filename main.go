@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	"github.com/wlame/rls/config"
 	"github.com/wlame/rls/server"
@@ -26,22 +27,22 @@ func main() {
 
 	cfg, err := loadConfig(*cfgPath, overrides)
 	if err != nil {
-		log.Printf("warning: %v — using built-in defaults", err)
+		log.Printf("%s  warning: %v — using built-in defaults", now(), err)
 		cfg = defaultConfig()
 		// Still apply CLI overrides (port/host) on top of defaults.
 		if mergeErr := config.MergeOverrides(cfg, overrides); mergeErr != nil {
-			log.Fatalf("invalid flags: %v", mergeErr)
+			log.Fatalf("%s  invalid flags: %v", now(), mergeErr)
 		}
 	}
 
 	srv, err := server.New(*cfg)
 	if err != nil {
-		log.Fatalf("create server: %v", err)
+		log.Fatalf("%s  create server: %v", now(), err)
 	}
 
-	log.Printf("rls listening on %s:%d", cfg.Server.Host, cfg.Server.Port)
+	log.Printf("%s  rls listening on %s:%d", now(), cfg.Server.Host, cfg.Server.Port)
 	if err := srv.Start(); err != nil {
-		log.Fatalf("server error: %v", err)
+		log.Fatalf("%s  server error: %v", now(), err)
 	}
 }
 
@@ -64,7 +65,11 @@ func defaultConfig() *config.Config {
 	return cfg
 }
 
+func now() string {
+	return time.Now().Format("2006-01-02 15:04:05.000")
+}
+
 func init() {
-	log.SetFlags(log.LstdFlags)
+	log.SetFlags(0)
 	log.SetOutput(os.Stderr)
 }
