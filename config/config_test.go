@@ -1,0 +1,209 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func writeTemp(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "rls-*.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	return f.Name()
+}
+
+func TestLoad_ValidYAML(t *testing.T) {
+	path := writeTemp(t, `
+server:
+  host: "127.0.0.1"
+  port: 9090
+defaults:
+  scheduler: lifo
+  unit: rpm
+  max_queue_size: 500
+  overflow: block
+endpoints:
+  - path: "/api"
+    rate: 60
+    algorithm: token_bucket
+    burst_size: 10
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Server.Host != "127.0.0.1" {
+		t.Errorf("host: got %q, want 127.0.0.1", cfg.Server.Host)
+	}
+	if cfg.Server.Port != 9090 {
+		t.Errorf("port: got %d, want 9090", cfg.Server.Port)
+	}
+
+	// find /api endpoint (root should be auto-inserted at index 0)
+	var apiEp *EndpointConfig
+	for i := range cfg.Endpoints {
+		if cfg.Endpoints[i].Path == "/api" {
+			apiEp = &cfg.Endpoints[i]
+		}
+	}
+	if apiEp == nil {
+		t.Fatal("/api endpoint not found")
+	}
+	if apiEp.Scheduler != "lifo" {
+		t.Errorf("scheduler: got %q, want lifo", apiEp.Scheduler)
+	}
+	if apiEp.Unit != "rpm" {
+		t.Errorf("unit: got %q, want rpm", apiEp.Unit)
+	}
+	if apiEp.MaxQueueSize != 500 {
+		t.Errorf("max_queue_size: got %d, want 500", apiEp.MaxQueueSize)
+	}
+	if apiEp.Overflow != "block" {
+		t.Errorf("overflow: got %q, want block", apiEp.Overflow)
+	}
+	if apiEp.BurstSize != 10 {
+		t.Errorf("burst_size: got %d, want 10", apiEp.BurstSize)
+	}
+}
+
+func TestLoad_MissingFile(t *testing.T) {
+	_, err := Load(filepath.Join(t.TempDir(), "nonexistent.yml"))
+	if err == nil {
+		t.Fatal("expected error for missing file, got nil")
+	}
+}
+
+func TestLoad_InvalidYAML(t *testing.T) {
+	path := writeTemp(t, `{invalid yaml:::`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for invalid YAML, got nil")
+	}
+}
+
+func TestApplyDefaults_FillsMissingFields(t *testing.T) {
+	cfg := &Config{
+		Defaults: Defaults{
+			Scheduler:    "priority",
+			Algorithm:    "token_bucket",
+			Unit:         "rpm",
+			MaxQueueSize: 200,
+			Overflow:     "block",
+		},
+		Endpoints: []EndpointConfig{
+			{Path: "/", Rate: 5},
+			{Path: "/other", Rate: 10, Scheduler: "random"},
+		},
+	}
+	ApplyDefaults(cfg)
+
+	root := cfg.Endpoints[0]
+	if root.Scheduler != "fifo" {
+		// root "/" was explicitly configured, should keep fifo (auto-insert skipped since / is present)
+	}
+
+	other := cfg.Endpoints[1]
+	if other.Scheduler != "random" {
+		t.Errorf("should preserve explicit scheduler, got %q", other.Scheduler)
+	}
+	if other.Algorithm != "token_bucket" {
+		t.Errorf("algorithm: got %q, want token_bucket", other.Algorithm)
+	}
+	if other.Unit != "rpm" {
+		t.Errorf("unit: got %q, want rpm", other.Unit)
+	}
+	if other.MaxQueueSize != 200 {
+		t.Errorf("max_queue_size: got %d, want 200", other.MaxQueueSize)
+	}
+	if other.Overflow != "block" {
+		t.Errorf("overflow: got %q, want block", other.Overflow)
+	}
+}
+
+func TestApplyDefaults_AutoInsertRoot(t *testing.T) {
+	cfg := &Config{
+		Endpoints: []EndpointConfig{
+			{Path: "/api", Rate: 10},
+		},
+	}
+	ApplyDefaults(cfg)
+
+	if cfg.Endpoints[0].Path != "/" {
+		t.Errorf("first endpoint should be auto-inserted /, got %q", cfg.Endpoints[0].Path)
+	}
+	root := cfg.Endpoints[0]
+	if root.Rate != 1 {
+		t.Errorf("root rate: got %f, want 1", root.Rate)
+	}
+	if root.Unit != "rps" {
+		t.Errorf("root unit: got %q, want rps", root.Unit)
+	}
+	if root.Scheduler != "fifo" {
+		t.Errorf("root scheduler: got %q, want fifo", root.Scheduler)
+	}
+	if root.Algorithm != "strict" {
+		t.Errorf("root algorithm: got %q, want strict", root.Algorithm)
+	}
+}
+
+func TestApplyDefaults_NoAutoInsertWhenRootPresent(t *testing.T) {
+	cfg := &Config{
+		Endpoints: []EndpointConfig{
+			{Path: "/", Rate: 5},
+		},
+	}
+	ApplyDefaults(cfg)
+	count := 0
+	for _, ep := range cfg.Endpoints {
+		if ep.Path == "/" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 root endpoint, got %d", count)
+	}
+}
+
+func TestApplyDefaults_SystemDefaultsWhenNoUserDefaults(t *testing.T) {
+	cfg := &Config{
+		Endpoints: []EndpointConfig{
+			{Path: "/", Rate: 3},
+		},
+	}
+	ApplyDefaults(cfg)
+	ep := cfg.Endpoints[0]
+	if ep.Scheduler != "fifo" {
+		t.Errorf("scheduler: got %q, want fifo", ep.Scheduler)
+	}
+	if ep.Algorithm != "strict" {
+		t.Errorf("algorithm: got %q, want strict", ep.Algorithm)
+	}
+	if ep.MaxQueueSize != 1000 {
+		t.Errorf("max_queue_size: got %d, want 1000", ep.MaxQueueSize)
+	}
+}
+
+func TestLoad_ServerDefaults(t *testing.T) {
+	path := writeTemp(t, `endpoints:
+  - path: "/"
+    rate: 1
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Server.Host != "0.0.0.0" {
+		t.Errorf("default host: got %q, want 0.0.0.0", cfg.Server.Host)
+	}
+	if cfg.Server.Port != 8080 {
+		t.Errorf("default port: got %d, want 8080", cfg.Server.Port)
+	}
+}
