@@ -3,3 +3,4 @@ docs
 rls
 .env
 *.env
+.fuse_hidden*
