@@ -27,8 +27,12 @@ var (
 	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 
 	// Status / help bar
-	helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	helpStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("248"))
 
 	// Paused indicator
 	pausedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3")).Render(" [PAUSED]")
+
+	// Log panel
+	logSepStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+	logLineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )

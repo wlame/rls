@@ -4,6 +4,8 @@ package tui
 
 import (
 	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -22,11 +24,35 @@ func DefaultDotThresholds() DotThresholds {
 	return DotThresholds{Warn: 2 * time.Second, Crit: 5 * time.Second}
 }
 
+// LogSink returns an io.Writer suitable for log.SetOutput and a read channel
+// that feeds log lines into the TUI log panel.
+// bufSize controls how many lines can be buffered before drops occur.
+func LogSink(bufSize int) (io.Writer, <-chan string) {
+	ch := make(chan string, bufSize)
+	return &logWriter{ch: ch}, ch
+}
+
+type logWriter struct{ ch chan<- string }
+
+func (w *logWriter) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(strings.TrimRight(string(p), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		select {
+		case w.ch <- line:
+		default: // drop when full; never block the logger
+		}
+	}
+	return len(p), nil
+}
+
 // Run starts the interactive Bubble Tea program and blocks until the user quits.
 // cfg populates the endpoint list and derives the server address.
 // events carries live rate-limiting events emitted by the running server.
-func Run(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds) error {
-	m := NewModel(cfg, events, thresholds)
+// logCh receives lines written via LogSink; pass nil to hide the log panel.
+func Run(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds, logCh <-chan string) error {
+	m := NewModel(cfg, events, thresholds, logCh)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)

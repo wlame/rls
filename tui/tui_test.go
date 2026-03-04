@@ -24,34 +24,37 @@ func testConfig() *config.Config {
 
 func newTestModel() Model {
 	ch := make(chan endpoint.Event, 16)
-	return NewModel(testConfig(), ch, DefaultDotThresholds())
+	return NewModel(testConfig(), ch, DefaultDotThresholds(), nil)
 }
 
 // --- computePercentiles ---
 
 func TestComputePercentiles_Empty(t *testing.T) {
-	p50, p99 := computePercentiles(nil)
-	if p50 != 0 || p99 != 0 {
-		t.Errorf("empty: want 0,0 got %d,%d", p50, p99)
+	p50, p90, p99 := computePercentiles(nil)
+	if p50 != 0 || p90 != 0 || p99 != 0 {
+		t.Errorf("empty: want 0,0,0 got %d,%d,%d", p50, p90, p99)
 	}
 }
 
 func TestComputePercentiles_Single(t *testing.T) {
-	p50, p99 := computePercentiles([]int64{42})
-	if p50 != 42 || p99 != 42 {
-		t.Errorf("single: want 42,42 got %d,%d", p50, p99)
+	p50, p90, p99 := computePercentiles([]int64{42})
+	if p50 != 42 || p90 != 42 || p99 != 42 {
+		t.Errorf("single: want 42,42,42 got %d,%d,%d", p50, p90, p99)
 	}
 }
 
 func TestComputePercentiles_Many(t *testing.T) {
-	// 100 samples 1..100; p50=50, p99=99
+	// 100 samples 1..100; p50=50, p90=90, p99=99
 	samples := make([]int64, 100)
 	for i := range samples {
 		samples[i] = int64(i + 1)
 	}
-	p50, p99 := computePercentiles(samples)
+	p50, p90, p99 := computePercentiles(samples)
 	if p50 != 50 {
 		t.Errorf("p50: want 50, got %d", p50)
+	}
+	if p90 != 90 {
+		t.Errorf("p90: want 90, got %d", p90)
 	}
 	if p99 != 99 {
 		t.Errorf("p99: want 99, got %d", p99)

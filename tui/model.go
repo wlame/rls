@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math/rand"
 	"net/http"
 	"os"
 	"sort"
@@ -17,12 +18,13 @@ import (
 
 // endpointState holds live per-endpoint metrics tracked by the TUI.
 type endpointState struct {
-	cfg         config.EndpointConfig
-	enqueuedAt  []time.Time // one entry per currently queued request
-	served      int64
-	rejected    int64
-	waitSamples []int64 // last 200 RequestServed wait times (ms)
-	lastWaitMs  int64   // most recent serve wait time
+	cfg          config.EndpointConfig
+	enqueuedAt   []time.Time // one entry per currently queued request
+	served       int64
+	rejected     int64
+	waitSamples  []int64 // last 200 RequestServed wait times (ms)
+	lastWaitMs   int64   // most recent serve wait time
+	totalWaitMs  int64   // cumulative wait across all served requests
 }
 
 // Model is the Bubble Tea model for the interactive TUI.
@@ -33,14 +35,18 @@ type Model struct {
 	width      int
 	height     int
 	events     <-chan endpoint.Event
+	logCh      <-chan string
+	logLines   []string
 	serverAddr string
 	lastStatus string
 	warnAfter  time.Duration
 	critAfter  time.Duration
+	showInfo   bool
 }
 
 // NewModel creates a Model pre-populated from the server config.
-func NewModel(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds) Model {
+// logCh may be nil (log panel stays empty).
+func NewModel(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds, logCh <-chan string) Model {
 	states := make([]endpointState, len(cfg.Endpoints))
 	for i, ep := range cfg.Endpoints {
 		states[i] = endpointState{cfg: ep}
@@ -49,18 +55,21 @@ func NewModel(cfg *config.Config, events <-chan endpoint.Event, thresholds DotTh
 	return Model{
 		endpoints:  states,
 		events:     events,
+		logCh:      logCh,
 		serverAddr: addr,
 		width:      80,
 		height:     24,
 		warnAfter:  thresholds.Warn,
 		critAfter:  thresholds.Crit,
+		showInfo:   true,
 	}
 }
 
-// Init starts the event listener and the 100ms refresh tick.
+// Init starts the event listener, log listener, and the 100ms refresh tick.
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		waitForEvent(m.events),
+		waitForLog(m.logCh),
 		tickEvery(),
 	)
 }
@@ -95,6 +104,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd, waitForEvent(m.events))
 		}
 		return m, waitForEvent(m.events)
+
+	case logLineMsg:
+		m.logLines = append(m.logLines, msg.line)
+		if len(m.logLines) > 200 {
+			m.logLines = m.logLines[len(m.logLines)-200:]
+		}
+		return m, waitForLog(m.logCh)
 	}
 
 	return m, nil
@@ -117,15 +133,20 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		if len(m.endpoints) > 0 {
-			m.endpoints[m.selected].served = 0
-			m.endpoints[m.selected].rejected = 0
-			m.endpoints[m.selected].waitSamples = nil
-			m.endpoints[m.selected].lastWaitMs = 0
-			m.lastStatus = fmt.Sprintf("stats reset for %s", m.endpoints[m.selected].cfg.Path)
+			st := &m.endpoints[m.selected]
+			st.served = 0
+			st.rejected = 0
+			st.waitSamples = nil
+			st.lastWaitMs = 0
+			st.totalWaitMs = 0
+			m.lastStatus = fmt.Sprintf("stats reset for %s", st.cfg.Path)
 		}
 
 	case "p":
 		m.paused = !m.paused
+
+	case "i":
+		m.showInfo = !m.showInfo
 
 	case " ":
 		if len(m.endpoints) > 0 {
@@ -145,7 +166,20 @@ func (m Model) handleServerEvent(ev endpoint.Event) (Model, tea.Cmd) {
 
 	switch ev.Kind {
 	case endpoint.EventQueued:
-		st.enqueuedAt = append(st.enqueuedAt, time.Now())
+		switch st.cfg.Scheduler {
+		case "lifo":
+			// Newest at left — leftmost is served next.
+			st.enqueuedAt = append([]time.Time{time.Now()}, st.enqueuedAt...)
+		case "random":
+			// Insert at a random position to reflect unpredictable serve order.
+			pos := rand.Intn(len(st.enqueuedAt) + 1)
+			st.enqueuedAt = append(st.enqueuedAt, time.Time{})
+			copy(st.enqueuedAt[pos+1:], st.enqueuedAt[pos:])
+			st.enqueuedAt[pos] = time.Now()
+		default:
+			// fifo / priority: newest at right, oldest (leftmost) served first.
+			st.enqueuedAt = append(st.enqueuedAt, time.Now())
+		}
 
 	case endpoint.EventServed:
 		if len(st.enqueuedAt) > 0 {
@@ -153,6 +187,7 @@ func (m Model) handleServerEvent(ev endpoint.Event) (Model, tea.Cmd) {
 		}
 		st.served++
 		st.lastWaitMs = ev.WaitedMs
+		st.totalWaitMs += ev.WaitedMs
 		st.waitSamples = appendSample(st.waitSamples, ev.WaitedMs)
 		m.lastStatus = fmt.Sprintf("served %-12s  waited=%dms  queue=%d",
 			ev.Path, ev.WaitedMs, ev.QueueDepth)
@@ -182,16 +217,32 @@ func (m Model) View() string {
 		return ""
 	}
 
-	// Reserve 1 line for title, 1 for status bar; rest for endpoint rows.
-	bodyHeight := m.height - 2
+	// Reserve 1 line for title, 1 for status bar; split remainder between
+	// the 3-column endpoint area (top ~2/3) and the log panel (bottom ~1/3).
+	totalAvail := m.height - 2
+	if totalAvail < 2 {
+		totalAvail = 2
+	}
+	logHeight := totalAvail / 3
+	if logHeight < 2 {
+		logHeight = 2
+	}
+	bodyHeight := totalAvail - logHeight - 1 // -1 for the separator line
 	if bodyHeight < 1 {
 		bodyHeight = 1
 	}
 
-	// Column widths (subtract 2 for the two dividers).
+	// Column widths.
 	leftW := m.width * 28 / 100
-	rightW := m.width * 27 / 100
-	midW := m.width - leftW - rightW - 2
+	rightW := 0
+	if m.showInfo {
+		rightW = max(22, m.width*18/100)
+	}
+	divCount := 1 // always one divider between left and mid
+	if m.showInfo {
+		divCount = 2
+	}
+	midW := m.width - leftW - rightW - divCount
 	if midW < 10 {
 		midW = 10
 	}
@@ -213,7 +264,10 @@ func (m Model) View() string {
 		midLines[i] = m.renderMidRow(st, midW)
 	}
 
-	rightLines := m.renderRightColumn(rightW, bodyHeight, n)
+	var rightLines []string
+	if m.showInfo {
+		rightLines = m.renderRightColumn(rightW, bodyHeight)
+	}
 
 	// Pad all columns to bodyHeight lines.
 	padTo(leftLines, bodyHeight, leftW)
@@ -222,7 +276,7 @@ func (m Model) View() string {
 	// Join columns row by row.
 	var rows []string
 	for i := 0; i < bodyHeight; i++ {
-		var l, mid, r string
+		var l, mid string
 		if i < len(leftLines) {
 			l = leftLines[i]
 		} else {
@@ -233,22 +287,53 @@ func (m Model) View() string {
 		} else {
 			mid = strings.Repeat(" ", midW)
 		}
-		if i < len(rightLines) {
-			r = rightLines[i]
-		} else {
-			r = strings.Repeat(" ", rightW)
+		row := l + divider + mid
+		if m.showInfo {
+			var r string
+			if i < len(rightLines) {
+				r = rightLines[i]
+			} else {
+				r = strings.Repeat(" ", rightW)
+			}
+			row += divider + r
 		}
-		rows = append(rows, l+divider+mid+divider+r)
+		rows = append(rows, row)
+	}
+
+	// --- Log panel ---
+	sep := logSepStyle.Render(strings.Repeat("─", m.width))
+
+	start := len(m.logLines) - logHeight
+	if start < 0 {
+		start = 0
+	}
+	tail := m.logLines[start:]
+	logRows := make([]string, logHeight)
+	for i := range logRows {
+		logRows[i] = strings.Repeat(" ", m.width)
+	}
+	for i, line := range tail {
+		if i >= logHeight {
+			break
+		}
+		if len(line) > m.width {
+			line = line[:m.width]
+		}
+		logRows[i] = logLineStyle.Render(line) + strings.Repeat(" ", max(0, m.width-len(line)))
 	}
 
 	// --- Status bar ---
-	help := " q quit  r reset  p pause  ↑↓/jk select  space inject"
+	help := " q quit  r reset  p pause  i info  ↑↓/jk select  space inject"
 	if m.lastStatus != "" {
 		help += "  │  " + m.lastStatus
 	}
 	statusLine := helpStyle.Width(m.width).Render(help)
 
-	return titleLine + "\n" + strings.Join(rows, "\n") + "\n" + statusLine
+	return titleLine + "\n" +
+		strings.Join(rows, "\n") + "\n" +
+		sep + "\n" +
+		strings.Join(logRows, "\n") + "\n" +
+		statusLine
 }
 
 func (m Model) renderLeftRow(idx int, st endpointState, width int) string {
@@ -309,7 +394,7 @@ func (m Model) renderMidRow(st endpointState, width int) string {
 	return dots.String() + padding + " " + counter
 }
 
-func (m Model) renderRightColumn(width, height, endpointRows int) []string {
+func (m Model) renderRightColumn(width, height int) []string {
 	lines := make([]string, height)
 	for i := range lines {
 		lines[i] = strings.Repeat(" ", width)
@@ -320,54 +405,51 @@ func (m Model) renderRightColumn(width, height, endpointRows int) []string {
 	}
 
 	st := m.endpoints[m.selected]
-	p50, p99 := computePercentiles(st.waitSamples)
+	p50, p90, p99 := computePercentiles(st.waitSamples)
+	sumSec := fmt.Sprintf("%.1fs", float64(st.totalWaitMs)/1000)
 
 	stats := []struct{ label, value string }{
 		{"served:  ", fmt.Sprintf("%d", st.served)},
 		{"rejected:", fmt.Sprintf("%d", st.rejected)},
 		{"p50:     ", fmt.Sprintf("%dms", p50)},
+		{"p90:     ", fmt.Sprintf("%dms", p90)},
 		{"p99:     ", fmt.Sprintf("%dms", p99)},
 		{"last:    ", fmt.Sprintf("%dms", st.lastWaitMs)},
+		{"sum:     ", sumSec},
 	}
 
-	// Place stats starting at the selected endpoint row (aligned with left column).
-	startRow := m.selected
-	if startRow >= height {
-		startRow = 0
-	}
-
+	// Stats pinned to top of column.
 	for i, s := range stats {
-		row := startRow + i
-		if row >= height {
+		if i >= height {
 			break
 		}
 		label := statLabelStyle.Render(s.label)
 		value := statValueStyle.Render(s.value)
 		line := " " + label + " " + value
-		// Truncate or pad to width.
 		visLen := utf8.RuneCountInString(s.label) + utf8.RuneCountInString(s.value) + 3
 		if visLen < width {
 			line += strings.Repeat(" ", width-visLen)
 		}
-		lines[row] = line
+		lines[i] = line
 	}
 
 	return lines
 }
 
-// computePercentiles returns the p50 and p99 of samples (in ms).
-// Returns 0,0 for empty or single-element slices.
-func computePercentiles(samples []int64) (p50, p99 int64) {
+// computePercentiles returns the p50, p90, and p99 of samples (in ms).
+// Returns 0,0,0 for empty slices.
+func computePercentiles(samples []int64) (p50, p90, p99 int64) {
 	n := len(samples)
 	if n == 0 {
-		return 0, 0
+		return 0, 0, 0
 	}
 	cp := make([]int64, n)
 	copy(cp, samples)
 	sort.Slice(cp, func(i, j int) bool { return cp[i] < cp[j] })
 	p50 = cp[(n-1)*50/100]
+	p90 = cp[(n-1)*90/100]
 	p99 = cp[(n-1)*99/100]
-	return p50, p99
+	return p50, p90, p99
 }
 
 // appendSample appends v to samples, capping at 200 entries.
@@ -389,6 +471,14 @@ func padTo(lines []string, n, width int) {
 // min returns the smaller of a and b.
 func min(a, b int) int {
 	if a < b {
+		return a
+	}
+	return b
+}
+
+// max returns the larger of a and b.
+func max(a, b int) int {
+	if a > b {
 		return a
 	}
 	return b

@@ -3,7 +3,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"time"
@@ -42,7 +41,8 @@ func main() {
 	}
 
 	if *interactive {
-		log.SetOutput(io.Discard)
+		logWriter, logCh := tui.LogSink(256)
+		log.SetOutput(logWriter)
 		events := make(chan endpoint.Event, 256)
 		srv, err := server.New(*cfg, endpoint.WithEventSink(events))
 		if err != nil {
@@ -53,7 +53,7 @@ func main() {
 				log.Printf("%s  server stopped: %v", now(), err)
 			}
 		}()
-		if err := tui.Run(cfg, events, tui.DotThresholds{Warn: *tuiWarn, Crit: *tuiCrit}); err != nil {
+		if err := tui.Run(cfg, events, tui.DotThresholds{Warn: *tuiWarn, Crit: *tuiCrit}, logCh); err != nil {
 			log.Fatalf("%s  tui error: %v", now(), err)
 		}
 		srv.Shutdown() //nolint:errcheck
