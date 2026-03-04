@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -241,6 +242,50 @@ func TestMergeOverrides_UnknownKey(t *testing.T) {
 	cfg := &Config{}
 	if err := MergeOverrides(cfg, map[string]string{"unknown": "value"}); err == nil {
 		t.Fatal("expected error for unknown key, got nil")
+	}
+}
+
+func TestConfig_JSONRoundTrip(t *testing.T) {
+	cfg := Config{
+		Server: ServerConfig{Host: "127.0.0.1", Port: 9090},
+		Defaults: Defaults{
+			Scheduler:    "fifo",
+			Algorithm:    "strict",
+			Unit:         "rps",
+			MaxQueueSize: 100,
+			Overflow:     "reject",
+		},
+		Endpoints: []EndpointConfig{
+			{Path: "/api", Rate: 10, Unit: "rps", Scheduler: "lifo", Algorithm: "token_bucket",
+				MaxQueueSize: 50, Overflow: "block", BurstSize: 5, WindowSeconds: 60},
+		},
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got Config
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Verify key fields survive the round-trip with snake_case keys.
+	if got.Server.Host != cfg.Server.Host || got.Server.Port != cfg.Server.Port {
+		t.Errorf("server mismatch: got %+v", got.Server)
+	}
+	if got.Endpoints[0].MaxQueueSize != 50 {
+		t.Errorf("max_queue_size: got %d, want 50", got.Endpoints[0].MaxQueueSize)
+	}
+	if got.Endpoints[0].BurstSize != 5 {
+		t.Errorf("burst_size: got %d, want 5", got.Endpoints[0].BurstSize)
+	}
+
+	// Verify snake_case field names.
+	var m map[string]interface{}
+	json.Unmarshal(data, &m)
+	srv := m["server"].(map[string]interface{})
+	if _, ok := srv["host"]; !ok {
+		t.Error("expected JSON key 'host' in server")
 	}
 }
 

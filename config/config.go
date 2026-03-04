@@ -9,37 +9,37 @@ import (
 
 // ServerConfig holds HTTP server settings.
 type ServerConfig struct {
-	Host string `yaml:"host"`
-	Port int    `yaml:"port"`
+	Host string `yaml:"host" json:"host"`
+	Port int    `yaml:"port" json:"port"`
 }
 
 // Defaults holds fallback values applied to endpoints that omit a field.
 type Defaults struct {
-	Scheduler    string `yaml:"scheduler"`
-	Algorithm    string `yaml:"algorithm"`
-	Unit         string `yaml:"unit"`
-	MaxQueueSize int    `yaml:"max_queue_size"`
-	Overflow     string `yaml:"overflow"`
+	Scheduler    string `yaml:"scheduler" json:"scheduler"`
+	Algorithm    string `yaml:"algorithm" json:"algorithm"`
+	Unit         string `yaml:"unit" json:"unit"`
+	MaxQueueSize int    `yaml:"max_queue_size" json:"max_queue_size"`
+	Overflow     string `yaml:"overflow" json:"overflow"`
 }
 
 // EndpointConfig describes a single rate-limited endpoint.
 type EndpointConfig struct {
-	Path          string  `yaml:"path"`
-	Rate          float64 `yaml:"rate"`
-	Unit          string  `yaml:"unit"`
-	Scheduler     string  `yaml:"scheduler"`
-	Algorithm     string  `yaml:"algorithm"`
-	MaxQueueSize  int     `yaml:"max_queue_size"`
-	Overflow      string  `yaml:"overflow"`
-	BurstSize     int     `yaml:"burst_size"`      // token_bucket only
-	WindowSeconds int     `yaml:"window_seconds"`  // sliding_window only
+	Path          string  `yaml:"path" json:"path"`
+	Rate          float64 `yaml:"rate" json:"rate"`
+	Unit          string  `yaml:"unit" json:"unit"`
+	Scheduler     string  `yaml:"scheduler" json:"scheduler"`
+	Algorithm     string  `yaml:"algorithm" json:"algorithm"`
+	MaxQueueSize  int     `yaml:"max_queue_size" json:"max_queue_size"`
+	Overflow      string  `yaml:"overflow" json:"overflow"`
+	BurstSize     int     `yaml:"burst_size" json:"burst_size"`
+	WindowSeconds int     `yaml:"window_seconds" json:"window_seconds"`
 }
 
 // Config is the top-level configuration.
 type Config struct {
-	Server    ServerConfig     `yaml:"server"`
-	Defaults  Defaults         `yaml:"defaults"`
-	Endpoints []EndpointConfig `yaml:"endpoints"`
+	Server    ServerConfig     `yaml:"server" json:"server"`
+	Defaults  Defaults         `yaml:"defaults" json:"defaults"`
+	Endpoints []EndpointConfig `yaml:"endpoints" json:"endpoints"`
 }
 
 // systemDefaults are the hard-coded fallbacks when nothing is configured.
