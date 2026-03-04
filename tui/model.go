@@ -35,10 +35,12 @@ type Model struct {
 	events     <-chan endpoint.Event
 	serverAddr string
 	lastStatus string
+	warnAfter  time.Duration
+	critAfter  time.Duration
 }
 
 // NewModel creates a Model pre-populated from the server config.
-func NewModel(cfg *config.Config, events <-chan endpoint.Event) Model {
+func NewModel(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds) Model {
 	states := make([]endpointState, len(cfg.Endpoints))
 	for i, ep := range cfg.Endpoints {
 		states[i] = endpointState{cfg: ep}
@@ -50,6 +52,8 @@ func NewModel(cfg *config.Config, events <-chan endpoint.Event) Model {
 		serverAddr: addr,
 		width:      80,
 		height:     24,
+		warnAfter:  thresholds.Warn,
+		critAfter:  thresholds.Crit,
 	}
 }
 
@@ -289,9 +293,9 @@ func (m Model) renderMidRow(st endpointState, width int) string {
 		}
 		age := now.Sub(t)
 		switch {
-		case age < 500*time.Millisecond:
+		case age < m.warnAfter:
 			dots.WriteString(dotGreen)
-		case age < 2*time.Second:
+		case age < m.critAfter:
 			dots.WriteString(dotYellow)
 		default:
 			dots.WriteString(dotRed)

@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"time"
@@ -18,6 +19,8 @@ func main() {
 	port := flag.Int("port", 0, "override server port")
 	host := flag.String("host", "", "override server host")
 	interactive := flag.Bool("interactive", false, "start interactive terminal UI")
+	tuiWarn := flag.Duration("tui-warn", 2*time.Second, "dot colour: green below this threshold")
+	tuiCrit := flag.Duration("tui-crit", 5*time.Second, "dot colour: yellow below this threshold, red at or above")
 	flag.Parse()
 
 	overrides := make(map[string]string)
@@ -39,6 +42,7 @@ func main() {
 	}
 
 	if *interactive {
+		log.SetOutput(io.Discard)
 		events := make(chan endpoint.Event, 256)
 		srv, err := server.New(*cfg, endpoint.WithEventSink(events))
 		if err != nil {
@@ -49,7 +53,7 @@ func main() {
 				log.Printf("%s  server stopped: %v", now(), err)
 			}
 		}()
-		if err := tui.Run(cfg, events); err != nil {
+		if err := tui.Run(cfg, events, tui.DotThresholds{Warn: *tuiWarn, Crit: *tuiCrit}); err != nil {
 			log.Fatalf("%s  tui error: %v", now(), err)
 		}
 		srv.Shutdown() //nolint:errcheck

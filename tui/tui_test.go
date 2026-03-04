@@ -24,7 +24,7 @@ func testConfig() *config.Config {
 
 func newTestModel() Model {
 	ch := make(chan endpoint.Event, 16)
-	return NewModel(testConfig(), ch)
+	return NewModel(testConfig(), ch, DefaultDotThresholds())
 }
 
 // --- computePercentiles ---
