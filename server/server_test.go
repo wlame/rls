@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/wlame/rls/config"
+	"github.com/wlame/rls/endpoint"
 )
 
 func testConfig(endpoints ...config.EndpointConfig) config.Config {
@@ -96,6 +97,39 @@ func TestServer_UnknownPath_Returns404(t *testing.T) {
 	}
 	if _, hasError := body["error"]; !hasError {
 		t.Error("body should have 'error' field")
+	}
+}
+
+func TestServer_WithEventSink_ReceivesEvents(t *testing.T) {
+	events := make(chan endpoint.Event, 16)
+	srv, err := New(testConfig(rootEndpoint(100)), endpoint.WithEventSink(events))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer srv.registry.StopAll()
+
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatalf("GET /: %v", err)
+	}
+	resp.Body.Close()
+
+	if len(events) == 0 {
+		t.Fatal("expected events in channel, got none")
+	}
+	// Must have at least EventQueued and EventServed.
+	kinds := make(map[endpoint.EventKind]bool)
+	for len(events) > 0 {
+		kinds[(<-events).Kind] = true
+	}
+	if !kinds[endpoint.EventQueued] {
+		t.Error("missing EventQueued")
+	}
+	if !kinds[endpoint.EventServed] {
+		t.Error("missing EventServed")
 	}
 }
 

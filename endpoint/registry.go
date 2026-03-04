@@ -12,10 +12,11 @@ type Registry struct {
 }
 
 // NewRegistry creates an Endpoint for each config and returns a Registry.
-func NewRegistry(cfgs []config.EndpointConfig) (*Registry, error) {
+// Any Options provided are forwarded to every Endpoint.
+func NewRegistry(cfgs []config.EndpointConfig, opts ...Option) (*Registry, error) {
 	r := &Registry{endpoints: make(map[string]*Endpoint, len(cfgs))}
 	for _, cfg := range cfgs {
-		ep, err := New(cfg)
+		ep, err := New(cfg, opts...)
 		if err != nil {
 			r.StopAll()
 			return nil, err
