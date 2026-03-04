@@ -14,18 +14,30 @@ type tickMsg struct{}
 // logLineMsg carries a single log line to the TUI log panel.
 type logLineMsg struct{ line string }
 
+// disconnectedMsg signals that the remote rls process has disconnected.
+type disconnectedMsg struct{}
+
 // waitForEvent returns a Cmd that blocks until the next endpoint.Event is available.
-// It is re-issued after every serverEventMsg to keep the event loop running.
+// If the channel is closed, it returns a disconnectedMsg.
 func waitForEvent(ch <-chan endpoint.Event) tea.Cmd {
 	return func() tea.Msg {
-		return serverEventMsg{ev: <-ch}
+		ev, ok := <-ch
+		if !ok {
+			return disconnectedMsg{}
+		}
+		return serverEventMsg{ev: ev}
 	}
 }
 
 // waitForLog returns a Cmd that blocks until the next log line is available.
+// If the channel is closed, it returns a disconnectedMsg.
 // A nil channel blocks forever (no-op), which is fine for tests.
 func waitForLog(ch <-chan string) tea.Cmd {
 	return func() tea.Msg {
-		return logLineMsg{line: <-ch}
+		line, ok := <-ch
+		if !ok {
+			return disconnectedMsg{}
+		}
+		return logLineMsg{line: line}
 	}
 }

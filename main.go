@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"os/signal"
 	"time"
 
+	"github.com/wlame/rls/attach"
 	"github.com/wlame/rls/config"
 	"github.com/wlame/rls/endpoint"
 	"github.com/wlame/rls/server"
@@ -20,8 +24,33 @@ func main() {
 	interactive := flag.Bool("interactive", false, "start interactive terminal UI")
 	tuiWarn := flag.Duration("tui-warn", 2*time.Second, "dot colour: green below this threshold")
 	tuiCrit := flag.Duration("tui-crit", 5*time.Second, "dot colour: yellow below this threshold, red at or above")
+	attachPID := flag.Int("attach", 0, "PID of rls process to attach to")
 	flag.Parse()
 
+	thresholds := tui.DotThresholds{Warn: *tuiWarn, Crit: *tuiCrit}
+
+	// --- Attach mode: connect to a running rls process ---
+	if *attachPID != 0 {
+		remoteCfg, remoteEvents, remoteLogs, err := attach.Connect(*attachPID)
+		if err != nil {
+			log.Fatalf("%s  attach: %v", now(), err)
+		}
+
+		if *interactive {
+			if err := tui.Run(&remoteCfg, remoteEvents, thresholds, remoteLogs, *attachPID); err != nil {
+				log.Fatalf("%s  tui error: %v", now(), err)
+			}
+		} else {
+			// Drain events in background.
+			go func() { for range remoteEvents {} }()
+			for line := range remoteLogs {
+				fmt.Printf("[%d] %s\n", *attachPID, line)
+			}
+		}
+		return
+	}
+
+	// --- Normal mode: load config and start server ---
 	overrides := make(map[string]string)
 	if *port != 0 {
 		overrides["port"] = fmt.Sprintf("%d", *port)
@@ -34,17 +63,20 @@ func main() {
 	if err != nil {
 		log.Printf("%s  warning: %v — using built-in defaults", now(), err)
 		cfg = defaultConfig()
-		// Still apply CLI overrides (port/host) on top of defaults.
 		if mergeErr := config.MergeOverrides(cfg, overrides); mergeErr != nil {
 			log.Fatalf("%s  invalid flags: %v", now(), mergeErr)
 		}
 	}
 
 	if *interactive {
-		logWriter, logCh := tui.LogSink(256)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		logWriter, rawLogCh := tui.LogSink(256)
 		log.SetOutput(logWriter)
-		events := make(chan endpoint.Event, 256)
-		srv, err := server.New(*cfg, endpoint.WithEventSink(events))
+
+		rawEvents := make(chan endpoint.Event, 256)
+		srv, err := server.New(*cfg, endpoint.WithEventSink(rawEvents))
 		if err != nil {
 			log.Fatalf("%s  create server: %v", now(), err)
 		}
@@ -53,22 +85,49 @@ func main() {
 				log.Printf("%s  server stopped: %v", now(), err)
 			}
 		}()
-		if err := tui.Run(cfg, events, tui.DotThresholds{Warn: *tuiWarn, Crit: *tuiCrit}, logCh); err != nil {
+
+		// Fanout: TUI + hub each get their own channels.
+		tuiEvents, hubEvents := attach.Events2(rawEvents)
+		tuiLogs, hubLogs := attach.Logs2(rawLogCh)
+
+		hub := attach.NewHub(*cfg)
+		go hub.Run(ctx, hubEvents, hubLogs)
+		go attach.Serve(ctx, hub, attach.SocketPath(os.Getpid()))
+
+		if err := tui.Run(cfg, tuiEvents, thresholds, tuiLogs, 0); err != nil {
 			log.Fatalf("%s  tui error: %v", now(), err)
 		}
+		cancel()
 		srv.Shutdown() //nolint:errcheck
 		return
 	}
 
-	srv, err := server.New(*cfg)
+	// Non-interactive mode.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	logWriter, rawLogCh := tui.LogSink(256)
+	log.SetOutput(io.MultiWriter(os.Stderr, logWriter))
+
+	rawEvents := make(chan endpoint.Event, 256)
+	srv, err := server.New(*cfg, endpoint.WithEventSink(rawEvents))
 	if err != nil {
 		log.Fatalf("%s  create server: %v", now(), err)
 	}
 
+	hub := attach.NewHub(*cfg)
+	go hub.Run(ctx, rawEvents, rawLogCh)
+	go attach.Serve(ctx, hub, attach.SocketPath(os.Getpid()))
+
 	log.Printf("%s  rls listening on %s:%d", now(), cfg.Server.Host, cfg.Server.Port)
-	if err := srv.Start(); err != nil {
-		log.Fatalf("%s  server error: %v", now(), err)
-	}
+	go func() {
+		if err := srv.Start(); err != nil {
+			log.Printf("%s  server error: %v", now(), err)
+		}
+	}()
+
+	<-ctx.Done()
+	srv.Shutdown() //nolint:errcheck
 }
 
 func loadConfig(path string, overrides map[string]string) (*config.Config, error) {

@@ -32,6 +32,9 @@ var (
 	// Paused indicator
 	pausedStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3")).Render(" [PAUSED]")
 
+	// Attached indicator
+	attachedStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5"))
+
 	// Log panel
 	logSepStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	logLineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
