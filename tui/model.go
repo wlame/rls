@@ -12,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/wlame/rls/attach"
 	"github.com/wlame/rls/config"
 	"github.com/wlame/rls/endpoint"
 )
@@ -47,11 +48,27 @@ type Model struct {
 
 // NewModel creates a Model pre-populated from the server config.
 // logCh may be nil (log panel stays empty).
-func NewModel(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds, logCh <-chan string, attachedPID int) Model {
+// snapshots (optional) seeds the queue dots from attach state.
+func NewModel(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds, logCh <-chan string, attachedPID int, snapshots []attach.EndpointSnapshot) Model {
 	states := make([]endpointState, len(cfg.Endpoints))
 	for i, ep := range cfg.Endpoints {
 		states[i] = endpointState{cfg: ep}
 	}
+
+	// Seed queue dots from attach snapshots.
+	now := time.Now()
+	for _, snap := range snapshots {
+		for i := range states {
+			if states[i].cfg.Path == snap.Path && snap.QueueDepth > 0 {
+				states[i].enqueuedAt = make([]time.Time, snap.QueueDepth)
+				for j := range states[i].enqueuedAt {
+					states[i].enqueuedAt[j] = now
+				}
+				break
+			}
+		}
+	}
+
 	addr := fmt.Sprintf("http://%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return Model{
 		endpoints:   states,

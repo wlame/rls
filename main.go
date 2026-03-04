@@ -31,13 +31,15 @@ func main() {
 
 	// --- Attach mode: connect to a running rls process ---
 	if *attachPID != 0 {
-		remoteCfg, remoteEvents, remoteLogs, err := attach.Connect(*attachPID)
+		remoteCfg, stateCh, remoteEvents, remoteLogs, err := attach.Connect(*attachPID)
 		if err != nil {
 			log.Fatalf("%s  attach: %v", now(), err)
 		}
 
+		snapshots := <-stateCh
+
 		if *interactive {
-			if err := tui.Run(&remoteCfg, remoteEvents, thresholds, remoteLogs, *attachPID); err != nil {
+			if err := tui.Run(&remoteCfg, remoteEvents, thresholds, remoteLogs, *attachPID, snapshots); err != nil {
 				log.Fatalf("%s  tui error: %v", now(), err)
 			}
 		} else {
@@ -90,11 +92,18 @@ func main() {
 		tuiEvents, hubEvents := attach.Events2(rawEvents)
 		tuiLogs, hubLogs := attach.Logs2(rawLogCh)
 
-		hub := attach.NewHub(*cfg)
+		hub := attach.NewHub(*cfg, func() []attach.EndpointSnapshot {
+			depths := srv.Registry().QueueDepths()
+			snaps := make([]attach.EndpointSnapshot, 0, len(depths))
+			for path, depth := range depths {
+				snaps = append(snaps, attach.EndpointSnapshot{Path: path, QueueDepth: depth})
+			}
+			return snaps
+		})
 		go hub.Run(ctx, hubEvents, hubLogs)
 		go attach.Serve(ctx, hub, attach.SocketPath(os.Getpid()))
 
-		if err := tui.Run(cfg, tuiEvents, thresholds, tuiLogs, 0); err != nil {
+		if err := tui.Run(cfg, tuiEvents, thresholds, tuiLogs, 0, nil); err != nil {
 			log.Fatalf("%s  tui error: %v", now(), err)
 		}
 		cancel()
@@ -115,7 +124,14 @@ func main() {
 		log.Fatalf("%s  create server: %v", now(), err)
 	}
 
-	hub := attach.NewHub(*cfg)
+	hub := attach.NewHub(*cfg, func() []attach.EndpointSnapshot {
+		depths := srv.Registry().QueueDepths()
+		snaps := make([]attach.EndpointSnapshot, 0, len(depths))
+		for path, depth := range depths {
+			snaps = append(snaps, attach.EndpointSnapshot{Path: path, QueueDepth: depth})
+		}
+		return snaps
+	})
 	go hub.Run(ctx, rawEvents, rawLogCh)
 	go attach.Serve(ctx, hub, attach.SocketPath(os.Getpid()))
 

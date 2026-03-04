@@ -9,19 +9,26 @@ import (
 	"github.com/wlame/rls/endpoint"
 )
 
+// StateFunc returns the current endpoint snapshots. May be nil.
+type StateFunc func() []EndpointSnapshot
+
 // Hub broadcasts events and logs to N subscribers.
-// Each new subscriber receives a config snapshot as its first message.
+// Each new subscriber receives a config snapshot (and optionally a state snapshot)
+// as its first messages.
 type Hub struct {
-	cfg  config.Config
-	mu   sync.RWMutex
-	subs map[chan WireMsg]struct{}
+	cfg       config.Config
+	stateFunc StateFunc
+	mu        sync.RWMutex
+	subs      map[chan WireMsg]struct{}
 }
 
 // NewHub creates a Hub that sends cfg as the initial snapshot to each subscriber.
-func NewHub(cfg config.Config) *Hub {
+// stateFunc (optional) is called on subscribe to send queue state after config.
+func NewHub(cfg config.Config, stateFunc StateFunc) *Hub {
 	return &Hub{
-		cfg:  cfg,
-		subs: make(map[chan WireMsg]struct{}),
+		cfg:       cfg,
+		stateFunc: stateFunc,
+		subs:      make(map[chan WireMsg]struct{}),
 	}
 }
 
@@ -39,6 +46,14 @@ func (h *Hub) Subscribe() (<-chan WireMsg, func()) {
 	select {
 	case ch <- WireMsg{Type: MsgConfig, Data: data}:
 	default:
+	}
+
+	if h.stateFunc != nil {
+		stateData, _ := json.Marshal(h.stateFunc())
+		select {
+		case ch <- WireMsg{Type: MsgState, Data: stateData}:
+		default:
+		}
 	}
 	h.mu.Unlock()
 

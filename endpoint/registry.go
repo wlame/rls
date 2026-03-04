@@ -59,6 +59,15 @@ func (r *Registry) Match(path string) (*Endpoint, bool) {
 	return nil, false
 }
 
+// QueueDepths returns the current queue depth for every endpoint, keyed by path.
+func (r *Registry) QueueDepths() map[string]int {
+	depths := make(map[string]int, len(r.endpoints))
+	for path, ep := range r.endpoints {
+		depths[path] = ep.QueueLen()
+	}
+	return depths
+}
+
 // StopAll stops all endpoint dispatchers.
 func (r *Registry) StopAll() {
 	for _, ep := range r.endpoints {

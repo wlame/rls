@@ -151,6 +151,16 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
+// QueueLen returns the current number of tickets in the queue.
+func (e *Endpoint) QueueLen() int {
+	return e.queue.Len()
+}
+
+// Path returns the configured path for this endpoint.
+func (e *Endpoint) Path() string {
+	return e.cfg.Path
+}
+
 // Stop shuts down the dispatcher and limiter.
 func (e *Endpoint) Stop() {
 	e.cancel()

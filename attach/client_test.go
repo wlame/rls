@@ -12,7 +12,7 @@ import (
 func TestConnectAddr_Integration(t *testing.T) {
 	cfg := testCfg()
 	cfg.Server.Host = "0.0.0.0" // should be patched to 127.0.0.1
-	hub := NewHub(cfg)
+	hub := NewHub(cfg, nil)
 
 	events := make(chan endpoint.Event, 10)
 	logs := make(chan string, 10)
@@ -24,7 +24,7 @@ func TestConnectAddr_Integration(t *testing.T) {
 	go Serve(ctx, hub, sockPath)
 	time.Sleep(50 * time.Millisecond)
 
-	gotCfg, evCh, logCh, err := ConnectAddr(sockPath)
+	gotCfg, stateCh, evCh, logCh, err := ConnectAddr(sockPath)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
@@ -35,7 +35,14 @@ func TestConnectAddr_Integration(t *testing.T) {
 	}
 
 	// Send event, verify arrival.
+	// State channel emits once the first non-state message arrives.
 	events <- endpoint.Event{Kind: endpoint.EventServed, Path: "/", WaitedMs: 7}
+
+	select {
+	case <-stateCh:
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for state")
+	}
 
 	select {
 	case ev := <-evCh:
@@ -60,7 +67,7 @@ func TestConnectAddr_Integration(t *testing.T) {
 }
 
 func TestConnect_NonExistentPID(t *testing.T) {
-	_, _, _, err := Connect(99999)
+	_, _, _, _, err := Connect(99999)
 	if err == nil {
 		t.Fatal("expected error for non-existent PID")
 	}
