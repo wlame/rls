@@ -20,9 +20,9 @@ type Server struct {
 	registry *endpoint.Registry
 }
 
-// New creates a Server from cfg. It builds the endpoint registry and wires the handler.
-func New(cfg config.Config) (*Server, error) {
-	registry, err := endpoint.NewRegistry(cfg.Endpoints)
+// New creates a Server from cfg. Any endpoint.Option values are forwarded to every Endpoint.
+func New(cfg config.Config, epOpts ...endpoint.Option) (*Server, error) {
+	registry, err := endpoint.NewRegistry(cfg.Endpoints, epOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("build registry: %w", err)
 	}

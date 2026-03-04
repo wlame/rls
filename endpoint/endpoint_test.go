@@ -311,6 +311,120 @@ func TestEndpoint_TokenBucket_BurstPreservedWhenQueueIdle(t *testing.T) {
 	t.Logf("burst=%v throttled=%v", elapseds[:burst], elapseds[burst:])
 }
 
+// --- Event emission tests ---
+
+func TestEndpoint_EmitQueued_OnSuccessfulPush(t *testing.T) {
+	ch := make(chan Event, 10)
+	ep, err := New(baseConfig("/", 100), WithEventSink(ch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	// Should have received EventQueued then EventServed.
+	if len(ch) < 2 {
+		t.Fatalf("expected at least 2 events, got %d", len(ch))
+	}
+	queued := <-ch
+	if queued.Kind != EventQueued {
+		t.Errorf("first event: want EventQueued, got %v", queued.Kind)
+	}
+	if queued.Path != "/" {
+		t.Errorf("queued path: want /, got %q", queued.Path)
+	}
+}
+
+func TestEndpoint_EmitServed_AfterRelease(t *testing.T) {
+	ch := make(chan Event, 10)
+	ep, err := New(baseConfig("/", 100), WithEventSink(ch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	// Drain EventQueued.
+	<-ch
+	// Next must be EventServed.
+	served := <-ch
+	if served.Kind != EventServed {
+		t.Errorf("second event: want EventServed, got %v", served.Kind)
+	}
+	if served.Path != "/" {
+		t.Errorf("served path: want /, got %q", served.Path)
+	}
+	if served.WaitedMs < 0 {
+		t.Errorf("served WaitedMs: want ≥0, got %d", served.WaitedMs)
+	}
+}
+
+func TestEndpoint_EmitRejected_OnQueueFull(t *testing.T) {
+	cfg := baseConfig("/", 1)
+	cfg.MaxQueueSize = 1
+
+	ch := make(chan Event, 20)
+	ep, err := New(cfg, WithEventSink(ch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+		}()
+	}
+	wg.Wait()
+
+	found := false
+	for {
+		select {
+		case ev := <-ch:
+			if ev.Kind == EventRejected {
+				found = true
+			}
+		default:
+			goto done
+		}
+	}
+done:
+	if !found {
+		t.Error("expected at least one EventRejected, got none")
+	}
+}
+
+func TestEndpoint_Emit_DropsWhenFull(t *testing.T) {
+	// A channel of size 1 that is already full must not deadlock emit().
+	ch := make(chan Event, 1)
+	ep := &Endpoint{events: ch}
+	ch <- Event{} // fill it
+
+	done := make(chan struct{})
+	go func() {
+		ep.emit(Event{Kind: EventQueued, Path: "/test"})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// good — emit returned without blocking
+	case <-time.After(100 * time.Millisecond):
+		t.Error("emit blocked on full channel")
+	}
+}
+
 func TestRegistry_LongestPrefixWins(t *testing.T) {
 	cfgs := []config.EndpointConfig{
 		baseConfig("/api", 10),

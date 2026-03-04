@@ -21,11 +21,12 @@ type Endpoint struct {
 	work   chan struct{} // signals dispatch that a ticket was just pushed
 	ctx    context.Context
 	cancel context.CancelFunc
+	events chan<- Event // nil when no sink configured
 }
 
 // New creates an Endpoint from its configuration, starts the dispatcher goroutine,
 // and returns it ready to handle requests.
-func New(cfg config.EndpointConfig) (*Endpoint, error) {
+func New(cfg config.EndpointConfig, opts ...Option) (*Endpoint, error) {
 	q, err := queue.New(cfg.Scheduler, cfg.MaxQueueSize)
 	if err != nil {
 		return nil, err
@@ -48,8 +49,23 @@ func New(cfg config.EndpointConfig) (*Endpoint, error) {
 		ctx:    ctx,
 		cancel: cancel,
 	}
+	for _, opt := range opts {
+		opt(ep)
+	}
 	go ep.dispatch()
 	return ep, nil
+}
+
+// emit sends an event to the configured sink. It never blocks: events are dropped if the
+// channel is full. Safe to call when events is nil (no-op).
+func (e *Endpoint) emit(ev Event) {
+	if e.events == nil {
+		return
+	}
+	select {
+	case e.events <- ev:
+	default:
+	}
 }
 
 // dispatch runs the rate-limited dispatch loop: wait for a queued ticket,
@@ -99,10 +115,12 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Default: reject when full.
 		if !e.queue.Push(ticket) {
+			e.emit(Event{Kind: EventRejected, Path: e.cfg.Path})
 			writeError(w, http.StatusTooManyRequests, "queue full")
 			return
 		}
 	}
+	e.emit(Event{Kind: EventQueued, Path: e.cfg.Path, Priority: ticket.Priority})
 	// Notify the dispatcher that a ticket is ready.
 	// Non-blocking: work is sized to MaxQueueSize so it can never be full
 	// when a push just succeeded.
@@ -117,6 +135,7 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := buildResponse(e.cfg, e.queue.Len(), ticket.EnqueuedAt)
+	e.emit(Event{Kind: EventServed, Path: e.cfg.Path, WaitedMs: resp.QueuedForMs, QueueDepth: resp.QueueDepth})
 	req := r.URL.RawQuery
 	if req == "" {
 		req = "-"

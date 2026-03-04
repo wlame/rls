@@ -6,7 +6,7 @@ defaults:
   scheduler: fifo
   algorithm: strict
   unit: rps
-  max_queue_size: 50
+  max_queue_size: 150
   overflow: reject
 
 endpoints:
@@ -16,7 +16,7 @@ endpoints:
     unit: rps
     scheduler: fifo
     algorithm: strict
-    max_queue_size: 20
+    max_queue_size: 60
 
   # Faster: 5 req/sec, FIFO, strict — slow requests should get instant replies
   - path: "/fast"
@@ -24,7 +24,7 @@ endpoints:
     unit: rps
     scheduler: fifo
     algorithm: strict
-    max_queue_size: 50
+    max_queue_size: 150
 
   # VIP lane: 2 req/sec, priority scheduler — X-Priority header controls order
   - path: "/vip"
@@ -32,7 +32,7 @@ endpoints:
     unit: rps
     scheduler: priority
     algorithm: strict
-    max_queue_size: 30
+    max_queue_size: 90
 
   # Burst-friendly: 3 req/sec with token_bucket, burst of 10 allowed
   - path: "/burst"
@@ -41,7 +41,7 @@ endpoints:
     scheduler: fifo
     algorithm: token_bucket
     burst_size: 10
-    max_queue_size: 50
+    max_queue_size: 150
 
   # Very slow: 20 req/min = 0.33 req/sec — for watching the queue build up
   - path: "/slow"
@@ -49,7 +49,7 @@ endpoints:
     unit: rpm
     scheduler: fifo
     algorithm: strict
-    max_queue_size: 15
+    max_queue_size: 45
 
   # Shuffle: 2 req/sec, random scheduler — unpredictable serve order
   - path: "/shuffle"
@@ -57,7 +57,7 @@ endpoints:
     unit: rps
     scheduler: random
     algorithm: strict
-    max_queue_size: 30
+    max_queue_size: 90
 
   # Sliding window: 4 req/sec, 2s window = 8 allowed per window
   # Burst of 8 passes fast; 9th+ must wait for slots to expire
@@ -67,7 +67,7 @@ endpoints:
     scheduler: fifo
     algorithm: sliding_window
     window_seconds: 2
-    max_queue_size: 30
+    max_queue_size: 90
 
   # LIFO: 2 req/sec, lifo scheduler — last arrived is served first
   # Stagger sends to establish arrival order; observe reverse serve order
@@ -76,4 +76,4 @@ endpoints:
     unit: rps
     scheduler: lifo
     algorithm: strict
-    max_queue_size: 20
+    max_queue_size: 60

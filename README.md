@@ -39,7 +39,44 @@ go build -o rls .
 
 # CLI flags override config file values
 ./rls --config=rls.yml --port=9090
+
+# Start with interactive terminal UI (recommended for development)
+./rls --config=rls.yml --interactive
 ```
+
+## Interactive TUI (`--interactive`)
+
+The `--interactive` flag starts a live terminal dashboard alongside the HTTP server.
+Useful during development to watch queue depth, serve rate, and wait-time distributions
+without tailing logs.
+
+```
+ rls  http://0.0.0.0:8080
+ ▶ /      FIFO 1rps  │ ●●●●●●●● ●●           [8/20] │  served:    42
+   /fast  FIFO 5rps  │ ●●                    [2/100] │  rejected:   3
+   /vip  PRIOR 2rps  │ ●●●●                   [4/20] │  p50:    180ms
+   /burst FIFO 3rps  │                        [0/20] │  p99:    920ms
+                                                      │  last:     3ms
+ q quit  r reset stats  p pause  ↑↓/jk select  space inject
+```
+
+**Layout:**
+- **Left**: configured endpoints with scheduler and rate
+- **Middle**: live queue dots per endpoint (green <500ms · yellow <2s · red >2s) with `[queued/max]` counter
+- **Right**: statistics for the selected endpoint (served, rejected, p50/p99 wait times, last wait)
+
+**Keybindings:**
+
+| Key | Action |
+|-----|--------|
+| `q` / `Ctrl+C` | Quit |
+| `↑` / `↓` / `j` / `k` | Select endpoint |
+| `r` | Reset stats for selected endpoint |
+| `p` | Pause / resume display |
+| `Space` | Inject a test GET request to the selected endpoint |
+
+**BEL**: when the selected endpoint serves a request its queue decreases, the terminal emits a BEL
+character (`\a`) — audible feedback if your terminal supports it.
 
 ## Config file
 
