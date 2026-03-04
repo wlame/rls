@@ -38,30 +38,32 @@ type Model struct {
 	logCh      <-chan string
 	logLines   []string
 	serverAddr string
-	lastStatus string
-	warnAfter  time.Duration
-	critAfter  time.Duration
-	showInfo   bool
+	lastStatus  string
+	warnAfter   time.Duration
+	critAfter   time.Duration
+	showInfo    bool
+	attachedPID int
 }
 
 // NewModel creates a Model pre-populated from the server config.
 // logCh may be nil (log panel stays empty).
-func NewModel(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds, logCh <-chan string) Model {
+func NewModel(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds, logCh <-chan string, attachedPID int) Model {
 	states := make([]endpointState, len(cfg.Endpoints))
 	for i, ep := range cfg.Endpoints {
 		states[i] = endpointState{cfg: ep}
 	}
 	addr := fmt.Sprintf("http://%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return Model{
-		endpoints:  states,
-		events:     events,
-		logCh:      logCh,
-		serverAddr: addr,
-		width:      80,
-		height:     24,
-		warnAfter:  thresholds.Warn,
-		critAfter:  thresholds.Crit,
-		showInfo:   true,
+		endpoints:   states,
+		events:      events,
+		logCh:       logCh,
+		serverAddr:  addr,
+		width:       80,
+		height:      24,
+		warnAfter:   thresholds.Warn,
+		critAfter:   thresholds.Crit,
+		showInfo:    true,
+		attachedPID: attachedPID,
 	}
 }
 
@@ -104,6 +106,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(cmd, waitForEvent(m.events))
 		}
 		return m, waitForEvent(m.events)
+
+	case disconnectedMsg:
+		m.lastStatus = "disconnected"
+		return m, tea.Quit
 
 	case logLineMsg:
 		m.logLines = append(m.logLines, msg.line)
@@ -249,6 +255,9 @@ func (m Model) View() string {
 
 	// --- Title bar ---
 	title := titleStyle.Render(fmt.Sprintf(" rls  %s", m.serverAddr))
+	if m.attachedPID != 0 {
+		title += attachedStyle.Render(fmt.Sprintf("  [attached: PID %d]", m.attachedPID))
+	}
 	if m.paused {
 		title += pausedStyle
 	}

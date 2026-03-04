@@ -51,8 +51,8 @@ func (w *logWriter) Write(p []byte) (int, error) {
 // cfg populates the endpoint list and derives the server address.
 // events carries live rate-limiting events emitted by the running server.
 // logCh receives lines written via LogSink; pass nil to hide the log panel.
-func Run(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds, logCh <-chan string) error {
-	m := NewModel(cfg, events, thresholds, logCh)
+func Run(cfg *config.Config, events <-chan endpoint.Event, thresholds DotThresholds, logCh <-chan string, attachedPID int) error {
+	m := NewModel(cfg, events, thresholds, logCh, attachedPID)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("tui: %w", err)
