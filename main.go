@@ -8,13 +8,16 @@ import (
 	"time"
 
 	"github.com/wlame/rls/config"
+	"github.com/wlame/rls/endpoint"
 	"github.com/wlame/rls/server"
+	"github.com/wlame/rls/tui"
 )
 
 func main() {
 	cfgPath := flag.String("config", "rls.yml", "path to config file")
 	port := flag.Int("port", 0, "override server port")
 	host := flag.String("host", "", "override server host")
+	interactive := flag.Bool("interactive", false, "start interactive terminal UI")
 	flag.Parse()
 
 	overrides := make(map[string]string)
@@ -33,6 +36,24 @@ func main() {
 		if mergeErr := config.MergeOverrides(cfg, overrides); mergeErr != nil {
 			log.Fatalf("%s  invalid flags: %v", now(), mergeErr)
 		}
+	}
+
+	if *interactive {
+		events := make(chan endpoint.Event, 256)
+		srv, err := server.New(*cfg, endpoint.WithEventSink(events))
+		if err != nil {
+			log.Fatalf("%s  create server: %v", now(), err)
+		}
+		go func() {
+			if err := srv.Start(); err != nil {
+				log.Printf("%s  server stopped: %v", now(), err)
+			}
+		}()
+		if err := tui.Run(cfg, events); err != nil {
+			log.Fatalf("%s  tui error: %v", now(), err)
+		}
+		srv.Shutdown() //nolint:errcheck
+		return
 	}
 
 	srv, err := server.New(*cfg)
