@@ -83,6 +83,11 @@ func (s *Server) Shutdown() error {
 	return s.http.Shutdown(ctx)
 }
 
+// Registry returns the endpoint registry for external access (e.g. attach state).
+func (s *Server) Registry() *endpoint.Registry {
+	return s.registry
+}
+
 // Handler returns the server's http.Handler for use in tests.
 func (s *Server) Handler() http.Handler {
 	return s.http.Handler

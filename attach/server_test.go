@@ -13,7 +13,7 @@ import (
 )
 
 func TestServe_Integration(t *testing.T) {
-	hub := NewHub(testCfg())
+	hub := NewHub(testCfg(), nil)
 
 	events := make(chan endpoint.Event, 10)
 	logs := make(chan string, 10)

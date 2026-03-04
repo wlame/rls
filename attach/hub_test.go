@@ -18,7 +18,7 @@ func testCfg() config.Config {
 }
 
 func TestHub_SubscribeReceivesConfigSnapshot(t *testing.T) {
-	hub := NewHub(testCfg())
+	hub := NewHub(testCfg(), nil)
 	ch, unsub := hub.Subscribe()
 	defer unsub()
 
@@ -40,7 +40,7 @@ func TestHub_SubscribeReceivesConfigSnapshot(t *testing.T) {
 }
 
 func TestHub_EventBroadcastReachesAllSubscribers(t *testing.T) {
-	hub := NewHub(testCfg())
+	hub := NewHub(testCfg(), nil)
 	ch1, unsub1 := hub.Subscribe()
 	defer unsub1()
 	ch2, unsub2 := hub.Subscribe()
@@ -71,7 +71,7 @@ func TestHub_EventBroadcastReachesAllSubscribers(t *testing.T) {
 }
 
 func TestHub_LogBroadcastReachesAllSubscribers(t *testing.T) {
-	hub := NewHub(testCfg())
+	hub := NewHub(testCfg(), nil)
 	ch1, unsub1 := hub.Subscribe()
 	defer unsub1()
 	ch2, unsub2 := hub.Subscribe()
@@ -101,7 +101,7 @@ func TestHub_LogBroadcastReachesAllSubscribers(t *testing.T) {
 }
 
 func TestHub_UnsubscribeStopsDelivery(t *testing.T) {
-	hub := NewHub(testCfg())
+	hub := NewHub(testCfg(), nil)
 	ch, unsub := hub.Subscribe()
 	<-ch // drain config
 
@@ -127,7 +127,7 @@ func TestHub_UnsubscribeStopsDelivery(t *testing.T) {
 }
 
 func TestHub_LateSubscriberGetsConfigFirst(t *testing.T) {
-	hub := NewHub(testCfg())
+	hub := NewHub(testCfg(), nil)
 
 	events := make(chan endpoint.Event, 10)
 	logs := make(chan string, 10)

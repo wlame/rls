@@ -24,7 +24,7 @@ func testConfig() *config.Config {
 
 func newTestModel() Model {
 	ch := make(chan endpoint.Event, 16)
-	return NewModel(testConfig(), ch, DefaultDotThresholds(), nil, 0)
+	return NewModel(testConfig(), ch, DefaultDotThresholds(), nil, 0, nil)
 }
 
 // --- computePercentiles ---
@@ -271,7 +271,7 @@ func TestView_ShowsPausedWhenPaused(t *testing.T) {
 
 func TestView_AttachedPID(t *testing.T) {
 	ch := make(chan endpoint.Event, 16)
-	m := NewModel(testConfig(), ch, DefaultDotThresholds(), nil, 12345)
+	m := NewModel(testConfig(), ch, DefaultDotThresholds(), nil, 12345, nil)
 	m.width = 100
 	m.height = 20
 	view := m.View()
