@@ -12,11 +12,11 @@ const (
 // Event carries rate-limiting telemetry emitted by an endpoint handler.
 // Events are sent on a best-effort basis: if the sink channel is full, the event is dropped.
 type Event struct {
-	Kind       EventKind
-	Path       string
-	Priority   int   // populated for EventQueued
-	WaitedMs   int64 // populated for EventServed
-	QueueDepth int   // populated for EventServed
+	Kind       EventKind `json:"kind"`
+	Path       string    `json:"path"`
+	Priority   int       `json:"priority"`    // populated for EventQueued
+	WaitedMs   int64     `json:"waited_ms"`   // populated for EventServed
+	QueueDepth int       `json:"queue_depth"` // populated for EventServed
 }
 
 // Option is a functional option for configuring an Endpoint.
