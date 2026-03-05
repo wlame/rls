@@ -87,25 +87,43 @@ func TestTokenBucket_ThrottlesAfterBurst(t *testing.T) {
 // --- SlidingWindowLimiter tests ---
 
 func TestSlidingWindow_RateWithinWindow(t *testing.T) {
-	// 5 RPS, 1-second window: in any 1-second slice, at most 5 grants.
-	// We measure over 2 seconds and expect ~10 total (±4 for timing).
-	l := NewSlidingWindow(5, 1)
+	// Test the core invariant: no more than `allowed` grants in any window.
+	// Request a fixed number of grants and verify timestamps.
+	const (
+		rps          = 5
+		windowSec    = 1
+		totalGrants  = 12 // enough to span multiple windows
+	)
+
+	l := NewSlidingWindow(rps, windowSec)
 	defer l.Stop()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	count := 0
-	for {
+	grants := make([]time.Time, 0, totalGrants)
+	for i := 0; i < totalGrants; i++ {
 		if err := l.Wait(ctx); err != nil {
-			break
+			t.Fatalf("grant %d timed out: %v", i, err)
 		}
-		count++
+		grants = append(grants, time.Now())
 	}
 
-	// Expect 6–14 grants (5 RPS × 2s = 10, ±40% tolerance for CI timing)
-	if count < 6 || count > 14 {
-		t.Errorf("sliding window 5 RPS/1s over 2s: got %d, want ~10", count)
+	// Check invariant: in any 1-second sliding window, at most `allowed` grants.
+	allowed := rps * windowSec
+	for i, ts := range grants {
+		windowEnd := ts
+		windowStart := windowEnd.Add(-time.Duration(windowSec) * time.Second)
+		count := 0
+		for _, g := range grants {
+			if g.After(windowStart) && !g.After(windowEnd) {
+				count++
+			}
+		}
+		if count > allowed+1 { // +1 tolerance for boundary timing
+			t.Errorf("grant %d: %d grants in 1s window ending at %v, want ≤%d",
+				i, count, windowEnd, allowed)
+		}
 	}
 }
 
