@@ -7,28 +7,42 @@ import (
 )
 
 // Response is the JSON payload returned by every rate-limited endpoint.
+// Contains the full resolved configuration, including inherited values.
 type Response struct {
-	OK          bool    `json:"ok"`
-	Endpoint    string  `json:"endpoint"`
-	QueuedForMs int64   `json:"queued_for_ms"`
-	QueueDepth  int     `json:"queue_depth"`
-	Rate        float64 `json:"rate"`
-	Unit        string  `json:"unit"`
-	Scheduler   string  `json:"scheduler"`
-	Algorithm   string  `json:"algorithm"`
+	OK            bool    `json:"ok"`
+	Endpoint      string  `json:"endpoint"`
+	QueuedForMs   int64   `json:"queued_for_ms"`
+	QueueDepth    int     `json:"queue_depth"`
+	Rate          float64 `json:"rate"`
+	Unit          string  `json:"unit"`
+	Scheduler     string  `json:"scheduler"`
+	Algorithm     string  `json:"algorithm"`
+	MaxQueueSize  int     `json:"max_queue_size"`
+	Overflow      string  `json:"overflow"`
+	BurstSize     int     `json:"burst_size,omitempty"`
+	WindowSeconds int     `json:"window_seconds,omitempty"`
+	QueueTimeout  float64 `json:"queue_timeout,omitempty"`
+	Dynamic       bool    `json:"dynamic,omitempty"`
 }
 
 // buildResponse constructs a Response from the endpoint config, current queue depth,
-// and the time the ticket was enqueued.
+// and the time the ticket was enqueued. All config fields are included — for dynamic
+// endpoints this reflects the fully resolved inherited values.
 func buildResponse(cfg config.EndpointConfig, queueDepth int, enqueuedAt time.Time) Response {
 	return Response{
-		OK:          true,
-		Endpoint:    cfg.Path,
-		QueuedForMs: time.Since(enqueuedAt).Milliseconds(),
-		QueueDepth:  queueDepth,
-		Rate:        cfg.Rate,
-		Unit:        cfg.Unit,
-		Scheduler:   cfg.Scheduler,
-		Algorithm:   cfg.Algorithm,
+		OK:            true,
+		Endpoint:      cfg.Path,
+		QueuedForMs:   time.Since(enqueuedAt).Milliseconds(),
+		QueueDepth:    queueDepth,
+		Rate:          cfg.Rate,
+		Unit:          cfg.Unit,
+		Scheduler:     cfg.Scheduler,
+		Algorithm:     cfg.Algorithm,
+		MaxQueueSize:  cfg.MaxQueueSize,
+		Overflow:      cfg.Overflow,
+		BurstSize:     cfg.BurstSize,
+		WindowSeconds: cfg.WindowSeconds,
+		QueueTimeout:  cfg.QueueTimeout,
+		Dynamic:       cfg.Dynamic,
 	}
 }

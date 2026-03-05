@@ -4,6 +4,8 @@ A small, async Go HTTP service that acts as a rate-limiting gate for outgoing HT
 
 Instead of implementing rate limiting inside each client application, clients make a blocking HTTP call to rls before each outgoing request. rls queues the request and responds only when the configured rate allows. The calling application is blocked for exactly the right amount of time.
 
+## Client examples: TBD.
+
 ## Why not a proxy?
 
 rls is **not** a proxy. It never sees your actual requests — no credentials, no request bodies, no response data passes through it. Your client calls rls, waits for the green light, then talks to the target service directly.
@@ -158,26 +160,34 @@ endpoints:
 
 ## Response format
 
-Every successful request returns JSON:
+Every successful request returns JSON with the **full resolved configuration** — including values inherited from parent endpoints for dynamic paths:
 
 ```json
 {
   "ok": true,
-  "endpoint": "/github",
+  "endpoint": "/api/v2/users",
   "queued_for_ms": 347,
   "queue_depth": 2,
   "rate": 10,
   "unit": "rps",
   "scheduler": "fifo",
-  "algorithm": "strict"
+  "algorithm": "strict",
+  "max_queue_size": 500,
+  "overflow": "reject",
+  "dynamic": true
 }
 ```
+
+Optional fields appear only when non-zero: `burst_size` (token_bucket), `window_seconds` (sliding_window), `queue_timeout`, `dynamic`.
 
 | Field           | Description |
 |-----------------|-------------|
 | `queued_for_ms` | How long this request waited in the queue |
 | `queue_depth`   | Number of requests still queued at time of response |
-| `rate`          | Configured rate for this endpoint |
+| `rate`          | Configured (or inherited) rate for this endpoint |
+| `max_queue_size`| Maximum queue capacity |
+| `overflow`      | What happens when queue is full (`reject` or `block`) |
+| `dynamic`       | `true` if this endpoint was auto-created from an unconfigured path |
 
 When the queue is full (`overflow: reject`) or the estimated wait exceeds `queue_timeout`, rls returns HTTP 429:
 

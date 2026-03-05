@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -161,6 +162,128 @@ func TestBuildResponse_Fields(t *testing.T) {
 	}
 	if resp.QueuedForMs < 40 || resp.QueuedForMs > 200 {
 		t.Errorf("queued_for_ms: got %d, want ~50ms (40–200)", resp.QueuedForMs)
+	}
+	if resp.MaxQueueSize != 100 {
+		t.Errorf("max_queue_size: got %d, want 100", resp.MaxQueueSize)
+	}
+	if resp.Overflow != "reject" {
+		t.Errorf("overflow: got %q, want reject", resp.Overflow)
+	}
+	if resp.Dynamic {
+		t.Error("dynamic: want false for configured endpoint")
+	}
+}
+
+func TestBuildResponse_AllConfigFields(t *testing.T) {
+	cfg := config.EndpointConfig{
+		Path:          "/tb",
+		Rate:          10,
+		Unit:          "rps",
+		Scheduler:     "fifo",
+		Algorithm:     "token_bucket",
+		MaxQueueSize:  200,
+		Overflow:      "block",
+		BurstSize:     15,
+		WindowSeconds: 30,
+		QueueTimeout:  5.5,
+		Dynamic:       false,
+	}
+	resp := buildResponse(cfg, 0, time.Now())
+
+	if resp.Algorithm != "token_bucket" {
+		t.Errorf("algorithm: got %q", resp.Algorithm)
+	}
+	if resp.MaxQueueSize != 200 {
+		t.Errorf("max_queue_size: got %d", resp.MaxQueueSize)
+	}
+	if resp.Overflow != "block" {
+		t.Errorf("overflow: got %q", resp.Overflow)
+	}
+	if resp.BurstSize != 15 {
+		t.Errorf("burst_size: got %d", resp.BurstSize)
+	}
+	if resp.WindowSeconds != 30 {
+		t.Errorf("window_seconds: got %d", resp.WindowSeconds)
+	}
+	if resp.QueueTimeout != 5.5 {
+		t.Errorf("queue_timeout: got %f", resp.QueueTimeout)
+	}
+}
+
+func TestBuildResponse_DynamicEndpoint(t *testing.T) {
+	cfg := config.EndpointConfig{
+		Path:         "/api/v2/users",
+		Rate:         10,
+		Unit:         "rps",
+		Scheduler:    "fifo",
+		Algorithm:    "strict",
+		MaxQueueSize: 500,
+		Overflow:     "reject",
+		Dynamic:      true,
+	}
+	resp := buildResponse(cfg, 2, time.Now().Add(-100*time.Millisecond))
+
+	if !resp.Dynamic {
+		t.Error("dynamic: want true for dynamic endpoint")
+	}
+	if resp.Endpoint != "/api/v2/users" {
+		t.Errorf("endpoint: got %q", resp.Endpoint)
+	}
+	if resp.Rate != 10 {
+		t.Errorf("rate: got %f, want 10 (inherited)", resp.Rate)
+	}
+	if resp.MaxQueueSize != 500 {
+		t.Errorf("max_queue_size: got %d, want 500 (inherited)", resp.MaxQueueSize)
+	}
+}
+
+func TestBuildResponse_JSONContainsAllFields(t *testing.T) {
+	cfg := config.EndpointConfig{
+		Path: "/api/v2", Rate: 10, Unit: "rps", Scheduler: "fifo",
+		Algorithm: "token_bucket", MaxQueueSize: 500, Overflow: "reject",
+		BurstSize: 20, WindowSeconds: 60, QueueTimeout: 3, Dynamic: true,
+	}
+	resp := buildResponse(cfg, 5, time.Now().Add(-200*time.Millisecond))
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(data)
+
+	for _, key := range []string{
+		`"ok"`, `"endpoint"`, `"queued_for_ms"`, `"queue_depth"`,
+		`"rate"`, `"unit"`, `"scheduler"`, `"algorithm"`,
+		`"max_queue_size"`, `"overflow"`, `"burst_size"`,
+		`"window_seconds"`, `"queue_timeout"`, `"dynamic"`,
+	} {
+		if !strings.Contains(s, key) {
+			t.Errorf("JSON missing key %s in: %s", key, s)
+		}
+	}
+}
+
+func TestBuildResponse_OmitsZeroOptionalFields(t *testing.T) {
+	cfg := config.EndpointConfig{
+		Path:         "/strict",
+		Rate:         1,
+		Unit:         "rps",
+		Scheduler:    "fifo",
+		Algorithm:    "strict",
+		MaxQueueSize: 100,
+		Overflow:     "reject",
+		// BurstSize, WindowSeconds, QueueTimeout all zero
+	}
+	resp := buildResponse(cfg, 0, time.Now())
+
+	if resp.BurstSize != 0 {
+		t.Errorf("burst_size: got %d, want 0", resp.BurstSize)
+	}
+	if resp.WindowSeconds != 0 {
+		t.Errorf("window_seconds: got %d, want 0", resp.WindowSeconds)
+	}
+	if resp.QueueTimeout != 0 {
+		t.Errorf("queue_timeout: got %f, want 0", resp.QueueTimeout)
 	}
 }
 

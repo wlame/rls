@@ -141,15 +141,24 @@ Dynamic endpoints inherit all zero-value fields from their nearest configured an
 
 ## Response Format
 
+Every response includes the full resolved configuration. For dynamic endpoints, inherited values are shown as if explicitly configured:
+
 ```json
 {
   "ok": true,
-  "endpoint": "/api",
+  "endpoint": "/api/v2/users",
   "queued_for_ms": 347,
   "queue_depth": 2,
   "rate": 10,
   "unit": "rps",
   "scheduler": "fifo",
-  "algorithm": "strict"
+  "algorithm": "strict",
+  "max_queue_size": 500,
+  "overflow": "reject",
+  "burst_size": 20,
+  "queue_timeout": 3,
+  "dynamic": true
 }
 ```
+
+Fields with zero values (`burst_size`, `window_seconds`, `queue_timeout`, `dynamic`) are omitted from JSON output.
