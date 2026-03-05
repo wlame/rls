@@ -109,6 +109,36 @@ func TestSlidingWindow_RateWithinWindow(t *testing.T) {
 	}
 }
 
+// --- BurstQuerier tests ---
+
+func TestTokenBucket_TokensAvailable_InitialBurst(t *testing.T) {
+	l := NewTokenBucket(10, 5)
+	defer l.Stop()
+
+	avail := l.TokensAvailable()
+	if avail < 4 || avail > 5 {
+		t.Errorf("initial tokens: got %d, want ~5", avail)
+	}
+}
+
+func TestTokenBucket_TokensAvailable_DropsAfterConsumption(t *testing.T) {
+	l := NewTokenBucket(1, 5)
+	defer l.Stop()
+
+	ctx := context.Background()
+	// Consume 3 tokens.
+	for i := 0; i < 3; i++ {
+		if err := l.Wait(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	avail := l.TokensAvailable()
+	if avail > 2 {
+		t.Errorf("after consuming 3 of 5: got %d available, want ≤2", avail)
+	}
+}
+
 // --- Factory tests ---
 
 func TestNew_StrictAlgorithm(t *testing.T) {

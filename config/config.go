@@ -15,11 +15,12 @@ type ServerConfig struct {
 
 // Defaults holds fallback values applied to endpoints that omit a field.
 type Defaults struct {
-	Scheduler    string `yaml:"scheduler" json:"scheduler"`
-	Algorithm    string `yaml:"algorithm" json:"algorithm"`
-	Unit         string `yaml:"unit" json:"unit"`
-	MaxQueueSize int    `yaml:"max_queue_size" json:"max_queue_size"`
-	Overflow     string `yaml:"overflow" json:"overflow"`
+	Scheduler    string  `yaml:"scheduler" json:"scheduler"`
+	Algorithm    string  `yaml:"algorithm" json:"algorithm"`
+	Unit         string  `yaml:"unit" json:"unit"`
+	MaxQueueSize int     `yaml:"max_queue_size" json:"max_queue_size"`
+	Overflow     string  `yaml:"overflow" json:"overflow"`
+	QueueTimeout float64 `yaml:"queue_timeout" json:"queue_timeout"`
 }
 
 // EndpointConfig describes a single rate-limited endpoint.
@@ -33,6 +34,7 @@ type EndpointConfig struct {
 	Overflow      string  `yaml:"overflow" json:"overflow"`
 	BurstSize     int     `yaml:"burst_size" json:"burst_size"`
 	WindowSeconds int     `yaml:"window_seconds" json:"window_seconds"`
+	QueueTimeout  float64 `yaml:"queue_timeout" json:"queue_timeout"`
 }
 
 // Config is the top-level configuration.

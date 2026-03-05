@@ -22,4 +22,8 @@ func (l *TokenBucketLimiter) Wait(ctx context.Context) error {
 	return l.rl.Wait(ctx)
 }
 
+func (l *TokenBucketLimiter) TokensAvailable() int {
+	return int(l.rl.Tokens())
+}
+
 func (l *TokenBucketLimiter) Stop() {}

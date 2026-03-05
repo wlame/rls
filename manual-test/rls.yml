@@ -77,3 +77,12 @@ endpoints:
     scheduler: lifo
     algorithm: strict
     max_queue_size: 60
+
+  # Admission timeout: 1 req/sec, 3s timeout — rejects if estimated wait > 3s
+  - path: "/timeout"
+    rate: 1
+    unit: rps
+    scheduler: fifo
+    algorithm: strict
+    max_queue_size: 60
+    queue_timeout: 3

@@ -52,4 +52,9 @@ sleep 3
 banner "07 — LIFO to /lifo (2 RPS) — 10 staggered, last arrived served first"
 /scripts/07-lifo.sh
 
+sleep 3
+
+banner "08 — ADMISSION TIMEOUT to /timeout (1 RPS, timeout=3s) — 8 concurrent, 4+ rejected"
+/scripts/08-timeout.sh
+
 banner "All profiles complete."

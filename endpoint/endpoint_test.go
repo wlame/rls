@@ -425,6 +425,329 @@ func TestEndpoint_Emit_DropsWhenFull(t *testing.T) {
 	}
 }
 
+// --- Admission timeout tests ---
+
+func TestEndpoint_QueueTimeout_RejectsWhenEstimatedWaitExceeds(t *testing.T) {
+	cfg := baseConfig("/", 1) // 1 RPS
+	cfg.QueueTimeout = 2      // 2s timeout
+	cfg.MaxQueueSize = 20
+
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	// Fill queue with 3 requests (will block waiting for release at 1 RPS).
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+		}()
+	}
+	// Give time for all 3 to be queued.
+	time.Sleep(100 * time.Millisecond)
+
+	// 4th request: estimated wait = 3/1 = 3s > 2s timeout → 429
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Errorf("status: got %d, want 429", rr.Code)
+	}
+
+	ep.Stop()
+	wg.Wait()
+}
+
+func TestEndpoint_QueueTimeout_AcceptsWithinLimit(t *testing.T) {
+	cfg := baseConfig("/", 1)
+	cfg.QueueTimeout = 5
+	cfg.MaxQueueSize = 20
+
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	// Fill queue with 3 (est wait for 4th = 3s < 5s timeout).
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// 4th request: est wait = 3s < 5s → accepted
+	done := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		ep.Handle(rr, req)
+		done <- rr.Code
+	}()
+
+	select {
+	case code := <-done:
+		if code == http.StatusTooManyRequests {
+			t.Error("expected request to be accepted, got 429")
+		}
+	case <-time.After(10 * time.Second):
+		t.Log("request still queued (accepted, not rejected) — OK")
+	}
+
+	ep.Stop()
+	wg.Wait()
+}
+
+func TestEndpoint_QueueTimeout_DisabledByDefault(t *testing.T) {
+	cfg := baseConfig("/", 1)
+	cfg.QueueTimeout = 0 // disabled
+	cfg.MaxQueueSize = 20
+
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	// Fill queue with 10 requests.
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// 11th request: no timeout → accepted into queue (not rejected).
+	done := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		ep.Handle(rr, req)
+		done <- rr.Code
+	}()
+
+	select {
+	case code := <-done:
+		if code == http.StatusTooManyRequests {
+			t.Error("expected request to be accepted when timeout=0, got 429")
+		}
+	case <-time.After(15 * time.Second):
+		t.Log("request still queued (accepted) — OK")
+	}
+
+	ep.Stop()
+	wg.Wait()
+}
+
+func TestEndpoint_QueueTimeout_QueryParamOverride(t *testing.T) {
+	cfg := baseConfig("/", 1)
+	cfg.QueueTimeout = 1 // very tight
+	cfg.MaxQueueSize = 20
+
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	// Fill queue with 3 (est wait = 3s > 1s config timeout).
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// With ?timeout=999, override allows it through.
+	done := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/?timeout=999", nil)
+		rr := httptest.NewRecorder()
+		ep.Handle(rr, req)
+		done <- rr.Code
+	}()
+
+	select {
+	case code := <-done:
+		if code == http.StatusTooManyRequests {
+			t.Error("expected ?timeout=999 to override config, got 429")
+		}
+	case <-time.After(10 * time.Second):
+		t.Log("request still queued (accepted via override) — OK")
+	}
+
+	ep.Stop()
+	wg.Wait()
+}
+
+func TestEndpoint_QueueTimeout_SkippedForLIFO(t *testing.T) {
+	cfg := baseConfig("/", 1)
+	cfg.Scheduler = "lifo"
+	cfg.QueueTimeout = 0.001 // tiny timeout
+	cfg.MaxQueueSize = 20
+
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// LIFO: estimateWait returns 0, so timeout check is skipped.
+	done := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		ep.Handle(rr, req)
+		done <- rr.Code
+	}()
+
+	select {
+	case code := <-done:
+		if code == http.StatusTooManyRequests {
+			t.Error("LIFO should skip timeout check, got 429")
+		}
+	case <-time.After(10 * time.Second):
+		t.Log("request still queued (LIFO accepted) — OK")
+	}
+
+	ep.Stop()
+	wg.Wait()
+}
+
+func TestEndpoint_QueueTimeout_SkippedForRandom(t *testing.T) {
+	cfg := baseConfig("/", 1)
+	cfg.Scheduler = "random"
+	cfg.QueueTimeout = 0.001
+	cfg.MaxQueueSize = 20
+
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	var wg sync.WaitGroup
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	done := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rr := httptest.NewRecorder()
+		ep.Handle(rr, req)
+		done <- rr.Code
+	}()
+
+	select {
+	case code := <-done:
+		if code == http.StatusTooManyRequests {
+			t.Error("random should skip timeout check, got 429")
+		}
+	case <-time.After(10 * time.Second):
+		t.Log("request still queued (random accepted) — OK")
+	}
+
+	ep.Stop()
+	wg.Wait()
+}
+
+func TestEndpoint_QueueTimeout_TokenBucket_BurstAware(t *testing.T) {
+	cfg := config.EndpointConfig{
+		Path:         "/burst",
+		Rate:         1,
+		Unit:         "rps",
+		Scheduler:    "fifo",
+		Algorithm:    "token_bucket",
+		BurstSize:    5,
+		MaxQueueSize: 20,
+		Overflow:     "reject",
+		QueueTimeout: 1, // 1s timeout
+	}
+
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	// Queue 3 requests. With burst=5, available tokens ≥ 3, so ahead = max(0, 3-5) = 0.
+	// Estimated wait = 0 < 1s → accepted.
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/burst", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// 4th: still within burst capacity
+	done := make(chan int, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/burst", nil)
+		rr := httptest.NewRecorder()
+		ep.Handle(rr, req)
+		done <- rr.Code
+	}()
+
+	select {
+	case code := <-done:
+		if code == http.StatusTooManyRequests {
+			t.Error("expected token_bucket burst to make request acceptable, got 429")
+		}
+	case <-time.After(10 * time.Second):
+		t.Log("request accepted (burst-aware) — OK")
+	}
+
+	ep.Stop()
+	wg.Wait()
+}
+
 func TestRegistry_LongestPrefixWins(t *testing.T) {
 	cfgs := []config.EndpointConfig{
 		baseConfig("/api", 10),

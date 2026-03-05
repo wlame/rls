@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
 	"time"
@@ -98,6 +99,21 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 		EnqueuedAt: time.Now(),
 	}
 
+	// Admission timeout: predict wait and reject early if it exceeds the threshold.
+	timeout := e.cfg.QueueTimeout
+	if v := r.URL.Query().Get("timeout"); v != "" {
+		if parsed, err := strconv.ParseFloat(v, 64); err == nil && parsed >= 0 {
+			timeout = parsed
+		}
+	}
+	if timeout > 0 {
+		if est := e.estimateWait(); est > time.Duration(timeout*float64(time.Second)) {
+			e.emit(Event{Kind: EventRejected, Path: e.cfg.Path})
+			writeError(w, http.StatusTooManyRequests, "estimated wait exceeds timeout")
+			return
+		}
+	}
+
 	if e.cfg.Overflow == "block" {
 		// Keep retrying until the queue accepts the ticket or the context is done.
 		for {
@@ -165,6 +181,32 @@ func (e *Endpoint) Path() string {
 func (e *Endpoint) Stop() {
 	e.cancel()
 	e.lim.Stop()
+}
+
+// estimateWait predicts how long a new request would wait in the queue.
+// For LIFO and random schedulers, prediction is not meaningful so it returns 0.
+func (e *Endpoint) estimateWait() time.Duration {
+	sched := e.cfg.Scheduler
+	if sched == "lifo" || sched == "random" {
+		return 0
+	}
+
+	rps := e.cfg.Rate
+	if e.cfg.Unit == "rpm" {
+		rps = e.cfg.Rate / 60.0
+	}
+	if rps <= 0 {
+		return 0
+	}
+
+	ahead := e.queue.Len()
+
+	if bq, ok := e.lim.(limiter.BurstQuerier); ok {
+		available := bq.TokensAvailable()
+		ahead = int(math.Max(0, float64(ahead-available)))
+	}
+
+	return time.Duration(float64(ahead) / rps * float64(time.Second))
 }
 
 // parsePriority reads the X-Priority request header. Defaults to 0.

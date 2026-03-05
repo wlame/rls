@@ -14,6 +14,11 @@ type Limiter interface {
 	Stop()
 }
 
+// BurstQuerier is implemented by limiters that support burst tokens.
+type BurstQuerier interface {
+	TokensAvailable() int
+}
+
 // LimiterOptions carries algorithm-specific configuration.
 type LimiterOptions struct {
 	BurstSize     int // token_bucket: max accumulated tokens
