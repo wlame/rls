@@ -17,7 +17,17 @@ import (
 	"github.com/wlame/rls/tui"
 )
 
+// version is set at build time via -ldflags.
+var version = "dev"
+
 func main() {
+	// Handle "version" subcommand before flag parsing.
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		fmt.Println("rls " + version)
+		return
+	}
+
+	showVersion := flag.Bool("version", false, "print version and exit")
 	cfgPath := flag.String("config", "rls.yml", "path to config file")
 	port := flag.Int("port", 0, "override server port")
 	host := flag.String("host", "", "override server host")
@@ -26,6 +36,11 @@ func main() {
 	tuiCrit := flag.Duration("tui-crit", 5*time.Second, "dot colour: yellow below this threshold, red at or above")
 	attachPID := flag.Int("attach", 0, "PID of rls process to attach to")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("rls " + version)
+		return
+	}
 
 	thresholds := tui.DotThresholds{Warn: *tuiWarn, Crit: *tuiCrit}
 

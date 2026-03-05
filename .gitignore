@@ -2,6 +2,7 @@ docs
 .claude/
 .serena/
 rls
+dist/
 .env
 *.env
 .fuse_hidden*
