@@ -161,11 +161,24 @@ Every successful request returns JSON:
 | `queue_depth`   | Number of requests still queued at time of response |
 | `rate`          | Configured rate for this endpoint |
 
-When the queue is full (`overflow: reject`), rls returns HTTP 429:
+When the queue is full (`overflow: reject`) or the estimated wait exceeds `queue_timeout`, rls returns HTTP 429:
 
 ```json
 {"ok": false, "error": "queue full"}
+{"ok": false, "error": "estimated wait exceeds timeout"}
 ```
+
+### Admission timeout
+
+Set `queue_timeout` (seconds) to reject requests upfront when the predicted wait exceeds the threshold, instead of waiting for the queue to fill:
+
+```yaml
+- path: "/api"
+  rate: 1
+  queue_timeout: 3   # reject if estimated wait > 3s
+```
+
+Clients can override per-request with the `?timeout=N` query parameter (e.g. `?timeout=999` to effectively disable). A value of `0` (default) disables the check entirely. The timeout prediction is skipped for `lifo` and `random` schedulers where wait time is unpredictable.
 
 ## Client example (Python)
 
