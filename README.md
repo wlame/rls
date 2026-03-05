@@ -4,6 +4,8 @@ A small, async Go HTTP service that acts as a rate-limiting gate for outgoing HT
 
 Instead of implementing rate limiting inside each client application, clients make a blocking HTTP call to rls before each outgoing request. rls queues the request and responds only when the configured rate allows. The calling application is blocked for exactly the right amount of time.
 
+This is especially useful when you have a fleet of workers hitting the same third-party API. Instead of each worker blindly implementing exponential backoff and hoping the combined retry storm doesn't overload the target, rls acts as a single synchronization point — all workers queue through it and send requests at the maximum efficient rate the target allows. As a side benefit, your API usage on the target service looks clean and predictable: no HTTP 429 "Too Many Requests" responses, no retry noise, no wasted quota.
+
 ## Client examples: TBD.
 
 ## Why not a proxy?
