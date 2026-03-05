@@ -1,6 +1,7 @@
 package endpoint
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -869,6 +870,56 @@ func TestEndpoint_QueueTimeout_TokenBucket_BurstAware(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Log("request accepted (burst-aware) — OK")
+	}
+
+	ep.Stop()
+	wg.Wait()
+}
+
+// --- Ghost ticket: client disconnect should not leak handler goroutine ---
+
+func TestEndpoint_ClientDisconnect_HandlerReturns(t *testing.T) {
+	cfg := baseConfig("/", 1) // 1 RPS — slow enough that requests queue
+	cfg.MaxQueueSize = 20
+
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	// Fill the queue so the next request blocks waiting for release.
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	// Send a request with a context that we cancel (simulating client disconnect).
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		ep.Handle(rr, req)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel() // simulate client disconnect
+
+	select {
+	case <-done:
+		// Handler returned — no goroutine leak
+	case <-time.After(2 * time.Second):
+		t.Error("Handle() did not return after client context was cancelled — goroutine leak")
 	}
 
 	ep.Stop()

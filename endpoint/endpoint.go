@@ -142,11 +142,16 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 	// when a push just succeeded.
 	e.work <- struct{}{}
 
-	// Block until the dispatcher releases this ticket.
+	// Block until the dispatcher releases this ticket, the server shuts down,
+	// or the client disconnects.
 	select {
 	case <-ticket.Release:
 	case <-e.ctx.Done():
 		http.Error(w, "service shutting down", http.StatusServiceUnavailable)
+		return
+	case <-r.Context().Done():
+		// Client disconnected. The ticket remains in the queue and the dispatcher
+		// will eventually pop and release it (harmless: Release is buffered).
 		return
 	}
 

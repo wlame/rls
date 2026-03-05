@@ -197,7 +197,12 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleServerEvent(ev endpoint.Event) (Model, tea.Cmd) {
 	idx := m.indexForPath(ev.Path)
 	if idx < 0 {
-		return m, nil
+		// Unknown path — create a dynamic endpoint inheriting from nearest parent.
+		m = m.addDynamicEndpoint(ev.Path)
+		idx = m.indexForPath(ev.Path)
+		if idx < 0 {
+			return m, nil
+		}
 	}
 	st := &m.endpoints[idx]
 
@@ -220,7 +225,12 @@ func (m Model) handleServerEvent(ev endpoint.Event) (Model, tea.Cmd) {
 
 	case endpoint.EventServed:
 		if len(st.enqueuedAt) > 0 {
-			st.enqueuedAt = st.enqueuedAt[1:]
+			if st.cfg.Scheduler == "random" {
+				i := rand.Intn(len(st.enqueuedAt))
+				st.enqueuedAt = append(st.enqueuedAt[:i], st.enqueuedAt[i+1:]...)
+			} else {
+				st.enqueuedAt = st.enqueuedAt[1:]
+			}
 		}
 		st.served++
 		st.lastWaitMs = ev.WaitedMs
@@ -246,6 +256,79 @@ func (m Model) indexForPath(path string) int {
 		}
 	}
 	return -1
+}
+
+// addDynamicEndpoint creates a new endpoint state for an unknown path by
+// inheriting config from the nearest existing parent. This allows the TUI
+// to discover dynamic endpoints from the event stream (attach mode).
+func (m Model) addDynamicEndpoint(eventPath string) Model {
+	// Find nearest parent by walking up the path.
+	var parent *endpointState
+	tmp := eventPath
+	for {
+		dir := strings.TrimRight(tmp, "/")
+		idx := strings.LastIndex(dir, "/")
+		if idx < 0 {
+			break
+		}
+		candidate := dir[:idx]
+		if candidate == "" {
+			candidate = "/"
+		}
+		if candidate != eventPath {
+			if pi := m.indexForPath(candidate); pi >= 0 {
+				parent = &m.endpoints[pi]
+				break
+			}
+		}
+		if candidate == "/" {
+			break
+		}
+		tmp = candidate
+	}
+
+	var newCfg config.EndpointConfig
+	if parent != nil {
+		newCfg = config.InheritFrom(config.EndpointConfig{Path: eventPath, Dynamic: true}, parent.cfg)
+	} else {
+		// No parent found — use minimal defaults.
+		newCfg = config.EndpointConfig{
+			Path:         eventPath,
+			Dynamic:      true,
+			Rate:         1,
+			Unit:         "rps",
+			Scheduler:    "fifo",
+			Algorithm:    "strict",
+			MaxQueueSize: 1000,
+			Overflow:     "reject",
+		}
+	}
+
+	newState := endpointState{cfg: newCfg, dynamic: true}
+
+	// Insert in sorted order by path.
+	inserted := false
+	newEndpoints := make([]endpointState, 0, len(m.endpoints)+1)
+	for _, st := range m.endpoints {
+		if !inserted && eventPath < st.cfg.Path {
+			newEndpoints = append(newEndpoints, newState)
+			inserted = true
+		}
+		newEndpoints = append(newEndpoints, st)
+	}
+	if !inserted {
+		newEndpoints = append(newEndpoints, newState)
+	}
+
+	m.endpoints = newEndpoints
+	m.treeLabels = buildTreeLabels(m.endpoints)
+
+	// Adjust selected index if insertion shifted it.
+	if m.selected >= len(m.endpoints) {
+		m.selected = len(m.endpoints) - 1
+	}
+
+	return m
 }
 
 // syncEndpoints updates the endpoint list from the registry snapshot,
@@ -442,10 +525,6 @@ func (m Model) View() string {
 	if m.showInfo {
 		rightLines = m.renderRightColumn(rightW, bodyHeight)
 	}
-
-	// Pad all columns to bodyHeight lines.
-	padTo(leftLines, bodyHeight, leftW)
-	padTo(midLines, bodyHeight, midW)
 
 	// Join columns row by row.
 	var rows []string
@@ -652,13 +731,6 @@ func appendSample(samples []int64, v int64) []int64 {
 		samples = samples[len(samples)-200:]
 	}
 	return samples
-}
-
-// padTo ensures lines has exactly n entries, each padded to width visible chars.
-func padTo(lines []string, n, width int) {
-	for len(lines) < n {
-		lines = append(lines, strings.Repeat(" ", width))
-	}
 }
 
 // min returns the smaller of a and b.

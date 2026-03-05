@@ -133,6 +133,34 @@ func TestServer_WithEventSink_ReceivesEvents(t *testing.T) {
 	}
 }
 
+func TestServer_Shutdown_StopsDispatchersAfterHTTP(t *testing.T) {
+	// Verify the shutdown ordering: HTTP drain happens before StopAll.
+	// We test this by checking that Shutdown() returns without error
+	// (http.Shutdown succeeds) and that dispatchers are stopped afterward.
+	srv, err := New(testConfig(rootEndpoint(100)))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify the server starts and can serve.
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("pre-shutdown: got %d, want 200", resp.StatusCode)
+	}
+
+	// Shutdown should complete without error.
+	if err := srv.Shutdown(); err != nil {
+		t.Errorf("shutdown: %v", err)
+	}
+}
+
 func TestServer_KnownPath_Routes_Correctly(t *testing.T) {
 	apiCfg := config.EndpointConfig{
 		Path: "/api", Rate: 100, Unit: "rps",

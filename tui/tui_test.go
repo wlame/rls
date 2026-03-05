@@ -141,15 +141,29 @@ func TestUpdate_EventRejected_IncrementsRejected(t *testing.T) {
 
 // --- Update: unknown path is ignored safely ---
 
-func TestUpdate_UnknownPath_NoChange(t *testing.T) {
+func TestUpdate_UnknownPath_CreatesDynamicEndpoint(t *testing.T) {
 	m := newTestModel()
+	initialCount := len(m.endpoints)
 	ev := endpoint.Event{Kind: endpoint.EventQueued, Path: "/nonexistent"}
 	updated, _ := m.Update(serverEventMsg{ev: ev})
 	m2 := updated.(Model)
+
+	// Original endpoints should be unaffected.
 	for _, st := range m2.endpoints {
-		if len(st.enqueuedAt) != 0 {
-			t.Error("unknown path should not affect any endpoint state")
+		if st.cfg.Path != "/nonexistent" && len(st.enqueuedAt) != 0 {
+			t.Error("unknown path event should not affect existing endpoints")
 		}
+	}
+	// A new dynamic endpoint should have been created.
+	if len(m2.endpoints) != initialCount+1 {
+		t.Errorf("expected %d endpoints (new dynamic), got %d", initialCount+1, len(m2.endpoints))
+	}
+	idx := m2.indexForPath("/nonexistent")
+	if idx < 0 {
+		t.Fatal("expected /nonexistent to be created as dynamic endpoint")
+	}
+	if !m2.endpoints[idx].dynamic {
+		t.Error("/nonexistent should be marked dynamic")
 	}
 }
 
@@ -464,6 +478,133 @@ func TestView_DynamicEndpoint_Dim(t *testing.T) {
 	view := m.View()
 	if view == "" {
 		t.Error("view should not be empty")
+	}
+}
+
+// --- EventServed dot removal for random scheduler ---
+
+func TestUpdate_EventServed_RandomScheduler_RemovesRandomDot(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Endpoints: []config.EndpointConfig{
+			{Path: "/rand", Rate: 1, Unit: "rps", Scheduler: "random", Algorithm: "strict", MaxQueueSize: 10},
+		},
+	}
+	ch := make(chan endpoint.Event, 16)
+	m := NewModel(cfg, ch, DefaultDotThresholds(), nil, 0, nil)
+
+	// Seed 3 dots with distinct timestamps.
+	t1 := time.Now().Add(-3 * time.Second)
+	t2 := time.Now().Add(-2 * time.Second)
+	t3 := time.Now().Add(-1 * time.Second)
+	m.endpoints[0].enqueuedAt = []time.Time{t1, t2, t3}
+
+	// After serving, should have 2 dots remaining.
+	ev := endpoint.Event{Kind: endpoint.EventServed, Path: "/rand", WaitedMs: 10, QueueDepth: 2}
+	updated, _ := m.Update(serverEventMsg{ev: ev})
+	m2 := updated.(Model)
+
+	if len(m2.endpoints[0].enqueuedAt) != 2 {
+		t.Fatalf("random serve: want 2 remaining dots, got %d", len(m2.endpoints[0].enqueuedAt))
+	}
+
+	// For random scheduler, it should NOT always remove the oldest (index 0).
+	// Run many times and check that sometimes the oldest survives.
+	// If always removing index 0, t1 would never survive.
+	survivedOldest := false
+	for i := 0; i < 100; i++ {
+		m3 := NewModel(cfg, ch, DefaultDotThresholds(), nil, 0, nil)
+		m3.endpoints[0].enqueuedAt = []time.Time{t1, t2, t3}
+		u, _ := m3.Update(serverEventMsg{ev: ev})
+		m4 := u.(Model)
+		for _, ts := range m4.endpoints[0].enqueuedAt {
+			if ts.Equal(t1) {
+				survivedOldest = true
+				break
+			}
+		}
+		if survivedOldest {
+			break
+		}
+	}
+	if !survivedOldest {
+		t.Error("random scheduler should sometimes preserve the oldest dot, but it was always removed (index 0 bias)")
+	}
+}
+
+// --- Attach mode: dynamic endpoint discovery from events ---
+
+func TestHandleServerEvent_UnknownPath_CreatesDynamicEndpoint(t *testing.T) {
+	// Simulate attach mode: TUI has only "/" from config, no registry.
+	m := newTestModel()
+	m.registry = nil // attach mode — no registry
+
+	// Event for a path that doesn't exist in m.endpoints.
+	ev := endpoint.Event{Kind: endpoint.EventQueued, Path: "/api/v2/users"}
+	updated, _ := m.Update(serverEventMsg{ev: ev})
+	m2 := updated.(Model)
+
+	// Should have created a new dynamic endpoint entry.
+	found := false
+	for _, st := range m2.endpoints {
+		if st.cfg.Path == "/api/v2/users" {
+			found = true
+			if !st.dynamic {
+				t.Error("/api/v2/users should be marked dynamic")
+			}
+			if len(st.enqueuedAt) != 1 {
+				t.Errorf("should have 1 enqueued dot, got %d", len(st.enqueuedAt))
+			}
+			break
+		}
+	}
+	if !found {
+		t.Error("expected dynamic endpoint /api/v2/users to be created from event")
+	}
+}
+
+func TestHandleServerEvent_DynamicEndpoint_InheritsFromParent(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Endpoints: []config.EndpointConfig{
+			{Path: "/", Rate: 1, Unit: "rps", Scheduler: "fifo", Algorithm: "strict", MaxQueueSize: 10, Overflow: "reject"},
+			{Path: "/api", Rate: 10, Unit: "rps", Scheduler: "priority", Algorithm: "token_bucket", MaxQueueSize: 500, Overflow: "reject", BurstSize: 20},
+		},
+	}
+	ch := make(chan endpoint.Event, 16)
+	m := NewModel(cfg, ch, DefaultDotThresholds(), nil, 42, nil) // attach mode (PID != 0, no registry)
+
+	ev := endpoint.Event{Kind: endpoint.EventQueued, Path: "/api/v2/users"}
+	updated, _ := m.Update(serverEventMsg{ev: ev})
+	m2 := updated.(Model)
+
+	idx := m2.indexForPath("/api/v2/users")
+	if idx < 0 {
+		t.Fatal("expected /api/v2/users to exist")
+	}
+	st := m2.endpoints[idx]
+	// Should inherit from /api (nearest parent).
+	if st.cfg.Rate != 10 {
+		t.Errorf("rate: want 10 (inherited from /api), got %.0f", st.cfg.Rate)
+	}
+	if st.cfg.Scheduler != "priority" {
+		t.Errorf("scheduler: want priority (inherited), got %s", st.cfg.Scheduler)
+	}
+	if st.cfg.MaxQueueSize != 500 {
+		t.Errorf("max_queue_size: want 500 (inherited), got %d", st.cfg.MaxQueueSize)
+	}
+}
+
+func TestHandleServerEvent_DynamicEndpoint_TreeLabelsUpdated(t *testing.T) {
+	m := newTestModel()
+	m.registry = nil
+
+	ev := endpoint.Event{Kind: endpoint.EventQueued, Path: "/api"}
+	updated, _ := m.Update(serverEventMsg{ev: ev})
+	m2 := updated.(Model)
+
+	if len(m2.treeLabels) != len(m2.endpoints) {
+		t.Errorf("treeLabels length %d != endpoints length %d", len(m2.treeLabels), len(m2.endpoints))
 	}
 }
 

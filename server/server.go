@@ -80,11 +80,14 @@ func (s *Server) Start() error {
 }
 
 // Shutdown gracefully drains the server with a 30-second timeout.
+// HTTP connections are drained first so in-flight requests complete,
+// then dispatchers are stopped.
 func (s *Server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	err := s.http.Shutdown(ctx)
 	s.registry.StopAll()
-	return s.http.Shutdown(ctx)
+	return err
 }
 
 // Registry returns the endpoint registry for external access (e.g. attach state).

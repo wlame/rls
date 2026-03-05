@@ -25,14 +25,17 @@ func NewSlidingWindow(rps float64, windowSeconds int) *SlidingWindowLimiter {
 
 // Wait blocks until a slot is available within the sliding window or ctx is cancelled.
 func (l *SlidingWindowLimiter) Wait(ctx context.Context) error {
+	timer := time.NewTimer(time.Millisecond)
+	defer timer.Stop()
 	for {
 		if l.tryGrant(time.Now()) {
 			return nil
 		}
+		timer.Reset(time.Millisecond)
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(time.Millisecond):
+		case <-timer.C:
 		}
 	}
 }
