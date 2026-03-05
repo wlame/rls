@@ -162,7 +162,8 @@ func TestServer_KnownPath_Routes_Correctly(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if ep, _ := body["endpoint"].(string); ep != "/api" {
-		t.Errorf("endpoint: got %q, want /api", ep)
+	// Dynamic endpoint creation: /api/users gets its own endpoint (inherits from /api).
+	if ep, _ := body["endpoint"].(string); ep != "/api/users" {
+		t.Errorf("endpoint: got %q, want /api/users (dynamic)", ep)
 	}
 }

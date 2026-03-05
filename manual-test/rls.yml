@@ -78,6 +78,9 @@ endpoints:
     algorithm: strict
     max_queue_size: 60
 
+  # Dynamic endpoints: requests to unconfigured paths (e.g. /dynamic/path/deep)
+  # auto-create endpoints inheriting config from the nearest configured ancestor.
+
   # Admission timeout: 1 req/sec, 3s timeout — rejects if estimated wait > 3s
   - path: "/timeout"
     rate: 1

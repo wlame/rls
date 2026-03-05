@@ -39,7 +39,7 @@ func main() {
 		snapshots := <-stateCh
 
 		if *interactive {
-			if err := tui.Run(&remoteCfg, remoteEvents, thresholds, remoteLogs, *attachPID, snapshots); err != nil {
+			if err := tui.Run(&remoteCfg, remoteEvents, thresholds, remoteLogs, *attachPID, snapshots, nil); err != nil {
 				log.Fatalf("%s  tui error: %v", now(), err)
 			}
 		} else {
@@ -103,7 +103,7 @@ func main() {
 		go hub.Run(ctx, hubEvents, hubLogs)
 		go attach.Serve(ctx, hub, attach.SocketPath(os.Getpid()))
 
-		if err := tui.Run(cfg, tuiEvents, thresholds, tuiLogs, 0, nil); err != nil {
+		if err := tui.Run(cfg, tuiEvents, thresholds, tuiLogs, 0, nil, srv.Registry()); err != nil {
 			log.Fatalf("%s  tui error: %v", now(), err)
 		}
 		cancel()

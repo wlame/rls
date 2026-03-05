@@ -289,6 +289,118 @@ func TestConfig_JSONRoundTrip(t *testing.T) {
 	}
 }
 
+// --- InheritFrom tests ---
+
+func TestInheritFrom_EmptyChildInheritsAll(t *testing.T) {
+	parent := EndpointConfig{
+		Path: "/api", Rate: 10, Unit: "rps", Scheduler: "fifo",
+		Algorithm: "token_bucket", MaxQueueSize: 500, Overflow: "block",
+		BurstSize: 20, WindowSeconds: 60, QueueTimeout: 3,
+	}
+	child := EndpointConfig{Path: "/api/v2", Dynamic: true}
+	got := InheritFrom(child, parent)
+
+	if got.Path != "/api/v2" {
+		t.Errorf("path: got %q, want /api/v2", got.Path)
+	}
+	if !got.Dynamic {
+		t.Error("dynamic should be preserved as true")
+	}
+	if got.Rate != 10 {
+		t.Errorf("rate: got %f, want 10", got.Rate)
+	}
+	if got.Unit != "rps" {
+		t.Errorf("unit: got %q, want rps", got.Unit)
+	}
+	if got.Scheduler != "fifo" {
+		t.Errorf("scheduler: got %q, want fifo", got.Scheduler)
+	}
+	if got.Algorithm != "token_bucket" {
+		t.Errorf("algorithm: got %q, want token_bucket", got.Algorithm)
+	}
+	if got.MaxQueueSize != 500 {
+		t.Errorf("max_queue_size: got %d, want 500", got.MaxQueueSize)
+	}
+	if got.Overflow != "block" {
+		t.Errorf("overflow: got %q, want block", got.Overflow)
+	}
+	if got.BurstSize != 20 {
+		t.Errorf("burst_size: got %d, want 20", got.BurstSize)
+	}
+	if got.WindowSeconds != 60 {
+		t.Errorf("window_seconds: got %d, want 60", got.WindowSeconds)
+	}
+	if got.QueueTimeout != 3 {
+		t.Errorf("queue_timeout: got %f, want 3", got.QueueTimeout)
+	}
+}
+
+func TestInheritFrom_PartialChildKeepsOwn(t *testing.T) {
+	parent := EndpointConfig{
+		Rate: 10, Unit: "rps", Scheduler: "fifo", Algorithm: "strict",
+		MaxQueueSize: 500, Overflow: "reject", BurstSize: 20, QueueTimeout: 5,
+	}
+	child := EndpointConfig{
+		Path: "/api/v2", Rate: 50, Scheduler: "lifo",
+	}
+	got := InheritFrom(child, parent)
+
+	if got.Rate != 50 {
+		t.Errorf("rate: got %f, want 50 (child's)", got.Rate)
+	}
+	if got.Scheduler != "lifo" {
+		t.Errorf("scheduler: got %q, want lifo (child's)", got.Scheduler)
+	}
+	if got.Unit != "rps" {
+		t.Errorf("unit: got %q, want rps (parent's)", got.Unit)
+	}
+	if got.Algorithm != "strict" {
+		t.Errorf("algorithm: got %q, want strict (parent's)", got.Algorithm)
+	}
+	if got.MaxQueueSize != 500 {
+		t.Errorf("max_queue_size: got %d, want 500 (parent's)", got.MaxQueueSize)
+	}
+}
+
+func TestInheritFrom_FullySpecifiedIgnoresParent(t *testing.T) {
+	parent := EndpointConfig{
+		Rate: 10, Unit: "rps", Scheduler: "fifo", Algorithm: "strict",
+		MaxQueueSize: 500, Overflow: "reject", BurstSize: 20, WindowSeconds: 30, QueueTimeout: 5,
+	}
+	child := EndpointConfig{
+		Path: "/x", Rate: 99, Unit: "rpm", Scheduler: "lifo", Algorithm: "sliding_window",
+		MaxQueueSize: 100, Overflow: "block", BurstSize: 5, WindowSeconds: 10, QueueTimeout: 1,
+	}
+	got := InheritFrom(child, parent)
+
+	if got.Rate != 99 || got.Unit != "rpm" || got.Scheduler != "lifo" ||
+		got.Algorithm != "sliding_window" || got.MaxQueueSize != 100 ||
+		got.Overflow != "block" || got.BurstSize != 5 || got.WindowSeconds != 10 ||
+		got.QueueTimeout != 1 {
+		t.Errorf("fully specified child should ignore parent, got %+v", got)
+	}
+}
+
+func TestInheritFrom_DynamicAndPathPreserved(t *testing.T) {
+	parent := EndpointConfig{Path: "/parent", Dynamic: false, Rate: 10}
+	child := EndpointConfig{Path: "/child", Dynamic: true}
+	got := InheritFrom(child, parent)
+
+	if got.Path != "/child" {
+		t.Errorf("path: got %q, want /child", got.Path)
+	}
+	if !got.Dynamic {
+		t.Error("dynamic should be preserved as true")
+	}
+
+	// non-dynamic child
+	child2 := EndpointConfig{Path: "/child2", Dynamic: false}
+	got2 := InheritFrom(child2, parent)
+	if got2.Dynamic {
+		t.Error("dynamic=false should be preserved")
+	}
+}
+
 func TestMergeOverrides_Empty(t *testing.T) {
 	cfg := &Config{Server: ServerConfig{Host: "1.2.3.4", Port: 1234}}
 	if err := MergeOverrides(cfg, map[string]string{}); err != nil {

@@ -63,29 +63,81 @@ Events are non-blocking: if the channel is full, the event is dropped silently.
 
 ## Registry
 
-`Registry` maps URL paths to endpoints with longest-prefix matching:
+`Registry` maps URL paths to endpoints. When a request arrives for an unconfigured path, a **dynamic endpoint** is created on the fly with its own independent queue and limiter, inheriting configuration from the nearest configured ancestor.
 
 ```go
-reg, _ := endpoint.NewRegistry(configs, endpoint.WithEventSink(ch))
-ep, ok := reg.Match("/api/v2/users")  // matches "/api/v2" or "/api" or "/"
+reg, _ := endpoint.NewRegistryWithOpts(configs, []endpoint.RegistryOption{
+    endpoint.WithMaxDynamic(1000),
+}, endpoint.WithEventSink(ch))
+
+ep, ok := reg.Match("/api/v2/users")  // creates dynamic endpoint inheriting from "/api"
 ```
 
-Matching priority: exact match > longest prefix > root `/` fallback.
+### Dynamic endpoint creation
+
+When `Match()` is called with a path that has no exact match in the registry:
+
+1. Walk parent paths: `/api/v2/users` → `/api/v2` → `/api` → `/`
+2. Find the nearest registered ancestor
+3. Create a new endpoint with `config.InheritFrom()` — zero-value fields in the child are filled from the parent
+4. Register it in the map with `Dynamic: true`
+
+The dynamic endpoint gets its **own queue and limiter** — it does not share the parent's. This gives per-path visibility and independent statistics.
+
+Dynamic endpoints persist until server restart. They appear in `Snapshot()`, `QueueDepths()`, TUI, and attach mode.
+
+### DoS protection
+
+Dynamic creation is capped by `max_dynamic_endpoints` (default 1000). Once the cap is reached, unconfigured paths fall back to the nearest configured parent's endpoint instead of creating a new one.
+
+```yaml
+defaults:
+  max_dynamic_endpoints: 1000   # cap on dynamically created endpoints
+```
+
+### Snapshot
+
+`Snapshot()` returns all endpoints (configured and dynamic) sorted by path:
+
+```go
+type EndpointInfo struct {
+    Config   config.EndpointConfig
+    QueueLen int
+}
+
+infos := reg.Snapshot()  // thread-safe, sorted by path
+```
+
+### Concurrency
+
+The registry uses `sync.RWMutex`:
+- `Match()` fast path (exact hit): `RLock` only
+- `Match()` slow path (dynamic creation): releases `RLock`, acquires `Lock`, double-checks
+- `Snapshot()`, `QueueDepths()`: `RLock`
+- `StopAll()`: `Lock`
 
 ## Configuration Reference
 
 ```yaml
-- path: "/api"
-  rate: 10                  # requests per unit
-  unit: rps                 # rps | rpm
-  scheduler: fifo           # fifo | lifo | priority | random
-  algorithm: strict         # strict | token_bucket | sliding_window
-  max_queue_size: 500       # max tickets in queue
-  overflow: reject          # reject | block
-  burst_size: 20            # token_bucket only
-  window_seconds: 60        # sliding_window only
-  queue_timeout: 3          # admission timeout in seconds (0 = disabled)
+defaults:
+  max_dynamic_endpoints: 1000  # cap on dynamically created endpoints (default 1000)
+
+endpoints:
+  - path: "/api"
+    rate: 10                  # requests per unit
+    unit: rps                 # rps | rpm
+    scheduler: fifo           # fifo | lifo | priority | random
+    algorithm: strict         # strict | token_bucket | sliding_window
+    max_queue_size: 500       # max tickets in queue
+    overflow: reject          # reject | block
+    burst_size: 20            # token_bucket only
+    window_seconds: 60        # sliding_window only
+    queue_timeout: 3          # admission timeout in seconds (0 = disabled)
 ```
+
+### Config inheritance
+
+Dynamic endpoints inherit all zero-value fields from their nearest configured ancestor. The `InheritFrom(child, parent)` function fills these fields: `Rate`, `Unit`, `Scheduler`, `Algorithm`, `MaxQueueSize`, `Overflow`, `BurstSize`, `WindowSeconds`, `QueueTimeout`. The child's `Path` and `Dynamic` flag are always preserved.
 
 ## Response Format
 

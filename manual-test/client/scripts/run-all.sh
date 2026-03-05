@@ -57,4 +57,9 @@ sleep 3
 banner "08 — ADMISSION TIMEOUT to /timeout (1 RPS, timeout=3s) — 8 concurrent, 4+ rejected"
 /scripts/08-timeout.sh
 
+sleep 3
+
+banner "09 — DYNAMIC ENDPOINTS — hit undeclared paths, observe independent endpoints"
+/scripts/09-dynamic.sh
+
 banner "All profiles complete."

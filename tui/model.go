@@ -26,24 +26,34 @@ type endpointState struct {
 	waitSamples  []int64 // last 200 RequestServed wait times (ms)
 	lastWaitMs   int64   // most recent serve wait time
 	totalWaitMs  int64   // cumulative wait across all served requests
+	dynamic      bool
+}
+
+// treeEntry is the computed tree label for rendering.
+type treeEntry struct {
+	label   string
+	depth   int
+	dynamic bool
 }
 
 // Model is the Bubble Tea model for the interactive TUI.
 type Model struct {
-	endpoints  []endpointState
-	selected   int
-	paused     bool
-	width      int
-	height     int
-	events     <-chan endpoint.Event
-	logCh      <-chan string
-	logLines   []string
-	serverAddr string
+	endpoints   []endpointState
+	selected    int
+	paused      bool
+	width       int
+	height      int
+	events      <-chan endpoint.Event
+	logCh       <-chan string
+	logLines    []string
+	serverAddr  string
 	lastStatus  string
 	warnAfter   time.Duration
 	critAfter   time.Duration
 	showInfo    bool
 	attachedPID int
+	registry    *endpoint.Registry
+	treeLabels  []treeEntry
 }
 
 // NewModel creates a Model pre-populated from the server config.
@@ -69,6 +79,8 @@ func NewModel(cfg *config.Config, events <-chan endpoint.Event, thresholds DotTh
 		}
 	}
 
+	treeLabels := buildTreeLabels(states)
+
 	addr := fmt.Sprintf("http://%s:%d", cfg.Server.Host, cfg.Server.Port)
 	return Model{
 		endpoints:   states,
@@ -81,6 +93,7 @@ func NewModel(cfg *config.Config, events <-chan endpoint.Event, thresholds DotTh
 		critAfter:   thresholds.Crit,
 		showInfo:    true,
 		attachedPID: attachedPID,
+		treeLabels:  treeLabels,
 	}
 }
 
@@ -114,6 +127,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.paused {
 			return m, tickEvery()
 		}
+		m.syncEndpoints()
 		return m, tickEvery()
 
 	case serverEventMsg:
@@ -232,6 +246,140 @@ func (m Model) indexForPath(path string) int {
 		}
 	}
 	return -1
+}
+
+// syncEndpoints updates the endpoint list from the registry snapshot,
+// inserting new dynamic endpoints while preserving existing stats.
+func (m *Model) syncEndpoints() {
+	if m.registry == nil {
+		return
+	}
+	snap := m.registry.Snapshot()
+
+	// Build lookup from current endpoints.
+	existing := make(map[string]int, len(m.endpoints))
+	for i, st := range m.endpoints {
+		existing[st.cfg.Path] = i
+	}
+
+	// Build new list in snapshot order, preserving existing stats.
+	newStates := make([]endpointState, 0, len(snap))
+	for _, info := range snap {
+		if idx, ok := existing[info.Config.Path]; ok {
+			// Preserve existing state, update cfg in case it changed.
+			st := m.endpoints[idx]
+			st.cfg = info.Config
+			st.dynamic = info.Config.Dynamic
+			newStates = append(newStates, st)
+		} else {
+			newStates = append(newStates, endpointState{
+				cfg:     info.Config,
+				dynamic: info.Config.Dynamic,
+			})
+		}
+	}
+
+	m.endpoints = newStates
+	m.treeLabels = buildTreeLabels(m.endpoints)
+
+	// Clamp selection.
+	if m.selected >= len(m.endpoints) {
+		m.selected = len(m.endpoints) - 1
+	}
+	if m.selected < 0 {
+		m.selected = 0
+	}
+}
+
+// buildTreeLabels computes tree labels for rendering endpoints as a tree.
+// Endpoints must be sorted by path. Max depth is 3; deeper paths flatten with "/".
+func buildTreeLabels(endpoints []endpointState) []treeEntry {
+	entries := make([]treeEntry, len(endpoints))
+	// Build set of registered paths for parent lookup.
+	registered := make(map[string]bool, len(endpoints))
+	for _, st := range endpoints {
+		registered[st.cfg.Path] = true
+	}
+
+	for i, st := range endpoints {
+		p := st.cfg.Path
+		entries[i].dynamic = st.dynamic
+
+		// Walk up to find the nearest registered parent.
+		depth := 0
+		parent := ""
+		tmp := p
+		for {
+			dir := strings.TrimRight(tmp, "/")
+			idx := strings.LastIndex(dir, "/")
+			if idx < 0 {
+				break
+			}
+			candidate := dir[:idx]
+			if candidate == "" {
+				candidate = "/"
+			}
+			if candidate != p && registered[candidate] {
+				parent = candidate
+				break
+			}
+			if candidate == "/" {
+				break
+			}
+			tmp = candidate
+		}
+
+		if parent == "" || parent == p {
+			// No tree parent found — render as full path at depth 0.
+			entries[i].label = p
+			entries[i].depth = 0
+			continue
+		}
+
+		// Compute depth by counting ancestors.
+		depth = 0
+		ancestor := parent
+		for ancestor != "" {
+			depth++
+			// Find ancestor's parent.
+			found := false
+			tmp2 := ancestor
+			for {
+				dir := strings.TrimRight(tmp2, "/")
+				idx := strings.LastIndex(dir, "/")
+				if idx < 0 {
+					break
+				}
+				cand := dir[:idx]
+				if cand == "" {
+					cand = "/"
+				}
+				if cand != ancestor && registered[cand] {
+					ancestor = cand
+					found = true
+					break
+				}
+				if cand == "/" {
+					break
+				}
+				tmp2 = cand
+			}
+			if !found {
+				break
+			}
+		}
+
+		// Cap depth at 3, flatten deeper paths.
+		label := strings.TrimPrefix(p, parent)
+		label = strings.TrimPrefix(label, "/")
+		if depth > 3 {
+			depth = 3
+		}
+
+		entries[i].label = label
+		entries[i].depth = depth
+	}
+	return entries
 }
 
 // View renders the full TUI.
@@ -369,17 +517,36 @@ func (m Model) renderLeftRow(idx int, st endpointState, width int) string {
 	if sched == "PRIORITY" {
 		sched = "PRIOR"
 	}
-	label := fmt.Sprintf(" %s  %s %.0f%s", cfg.Path, sched, cfg.Rate, unit)
+
+	// Use tree label if available, otherwise full path.
+	pathLabel := cfg.Path
+	indent := ""
+	if idx < len(m.treeLabels) {
+		te := m.treeLabels[idx]
+		pathLabel = te.label
+		if te.depth > 0 {
+			indent = strings.Repeat("  ", te.depth-1) + treeConnectorStyle.Render("└ ")
+		}
+	}
+
+	label := fmt.Sprintf("%s  %s %.0f%s", pathLabel, sched, cfg.Rate, unit)
 
 	var cursor string
+	var rowStyle lipgloss.Style
 	if idx == m.selected {
 		cursor = cursorStyle.Render("▶")
-		label = selectedRowStyle.Width(width - 1).Render(label)
+		rowStyle = selectedRowStyle
 	} else {
 		cursor = " "
-		label = normalRowStyle.Width(width - 1).Render(label)
+		if st.dynamic {
+			rowStyle = dynamicRowStyle
+		} else {
+			rowStyle = configuredRowStyle
+		}
 	}
-	return cursor + label
+
+	rendered := " " + indent + rowStyle.Render(label)
+	return cursor + lipgloss.NewStyle().Width(width - 1).Render(rendered)
 }
 
 func (m Model) renderMidRow(st endpointState, width int) string {

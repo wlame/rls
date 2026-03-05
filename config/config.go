@@ -15,12 +15,13 @@ type ServerConfig struct {
 
 // Defaults holds fallback values applied to endpoints that omit a field.
 type Defaults struct {
-	Scheduler    string  `yaml:"scheduler" json:"scheduler"`
-	Algorithm    string  `yaml:"algorithm" json:"algorithm"`
-	Unit         string  `yaml:"unit" json:"unit"`
-	MaxQueueSize int     `yaml:"max_queue_size" json:"max_queue_size"`
-	Overflow     string  `yaml:"overflow" json:"overflow"`
-	QueueTimeout float64 `yaml:"queue_timeout" json:"queue_timeout"`
+	Scheduler           string  `yaml:"scheduler" json:"scheduler"`
+	Algorithm           string  `yaml:"algorithm" json:"algorithm"`
+	Unit                string  `yaml:"unit" json:"unit"`
+	MaxQueueSize        int     `yaml:"max_queue_size" json:"max_queue_size"`
+	Overflow            string  `yaml:"overflow" json:"overflow"`
+	QueueTimeout        float64 `yaml:"queue_timeout" json:"queue_timeout"`
+	MaxDynamicEndpoints int     `yaml:"max_dynamic_endpoints" json:"max_dynamic_endpoints"`
 }
 
 // EndpointConfig describes a single rate-limited endpoint.
@@ -35,6 +36,7 @@ type EndpointConfig struct {
 	BurstSize     int     `yaml:"burst_size" json:"burst_size"`
 	WindowSeconds int     `yaml:"window_seconds" json:"window_seconds"`
 	QueueTimeout  float64 `yaml:"queue_timeout" json:"queue_timeout"`
+	Dynamic       bool    `yaml:"-" json:"-"`
 }
 
 // Config is the top-level configuration.
@@ -131,6 +133,39 @@ func ApplyDefaults(cfg *Config) {
 			ep.Overflow = d.Overflow
 		}
 	}
+}
+
+// InheritFrom fills zero-value fields in child from parent.
+// Path and Dynamic are always preserved from child.
+func InheritFrom(child, parent EndpointConfig) EndpointConfig {
+	if child.Rate == 0 {
+		child.Rate = parent.Rate
+	}
+	if child.Unit == "" {
+		child.Unit = parent.Unit
+	}
+	if child.Scheduler == "" {
+		child.Scheduler = parent.Scheduler
+	}
+	if child.Algorithm == "" {
+		child.Algorithm = parent.Algorithm
+	}
+	if child.MaxQueueSize == 0 {
+		child.MaxQueueSize = parent.MaxQueueSize
+	}
+	if child.Overflow == "" {
+		child.Overflow = parent.Overflow
+	}
+	if child.BurstSize == 0 {
+		child.BurstSize = parent.BurstSize
+	}
+	if child.WindowSeconds == 0 {
+		child.WindowSeconds = parent.WindowSeconds
+	}
+	if child.QueueTimeout == 0 {
+		child.QueueTimeout = parent.QueueTimeout
+	}
+	return child
 }
 
 func mergeWithSystem(d Defaults) Defaults {

@@ -38,4 +38,9 @@ var (
 	// Log panel
 	logSepStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 	logLineStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+
+	// Tree rendering: configured vs dynamic endpoints
+	configuredRowStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("255"))
+	dynamicRowStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	treeConnectorStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
 )

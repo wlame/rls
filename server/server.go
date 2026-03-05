@@ -22,7 +22,11 @@ type Server struct {
 
 // New creates a Server from cfg. Any endpoint.Option values are forwarded to every Endpoint.
 func New(cfg config.Config, epOpts ...endpoint.Option) (*Server, error) {
-	registry, err := endpoint.NewRegistry(cfg.Endpoints, epOpts...)
+	var regOpts []endpoint.RegistryOption
+	if cfg.Defaults.MaxDynamicEndpoints > 0 {
+		regOpts = append(regOpts, endpoint.WithMaxDynamic(cfg.Defaults.MaxDynamicEndpoints))
+	}
+	registry, err := endpoint.NewRegistryWithOpts(cfg.Endpoints, regOpts, epOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("build registry: %w", err)
 	}

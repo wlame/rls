@@ -233,8 +233,9 @@ func TestView_ContainsEndpointPaths(t *testing.T) {
 	if !strings.Contains(view, "/") {
 		t.Error("view should contain /")
 	}
-	if !strings.Contains(view, "/fast") {
-		t.Error("view should contain /fast")
+	// Tree rendering shows "fast" (stripped prefix from /fast under /)
+	if !strings.Contains(view, "fast") {
+		t.Error("view should contain fast")
 	}
 }
 
@@ -277,6 +278,192 @@ func TestView_AttachedPID(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "PID 12345") {
 		t.Error("view should contain PID 12345 when attached")
+	}
+}
+
+// --- buildTreeLabels ---
+
+func TestBuildTreeLabels_FlatPaths(t *testing.T) {
+	// All top-level paths are children of /, so depth=1 (except / itself at depth=0)
+	eps := []endpointState{
+		{cfg: config.EndpointConfig{Path: "/"}},
+		{cfg: config.EndpointConfig{Path: "/api"}},
+		{cfg: config.EndpointConfig{Path: "/timeout"}},
+	}
+	labels := buildTreeLabels(eps)
+	if labels[0].depth != 0 || labels[0].label != "/" {
+		t.Errorf("root: depth=%d label=%q", labels[0].depth, labels[0].label)
+	}
+	if labels[1].depth != 1 || labels[1].label != "api" {
+		t.Errorf("/api: depth=%d label=%q, want depth=1 label=api", labels[1].depth, labels[1].label)
+	}
+	if labels[2].depth != 1 || labels[2].label != "timeout" {
+		t.Errorf("/timeout: depth=%d label=%q, want depth=1 label=timeout", labels[2].depth, labels[2].label)
+	}
+}
+
+func TestBuildTreeLabels_NestedPaths(t *testing.T) {
+	eps := []endpointState{
+		{cfg: config.EndpointConfig{Path: "/"}},
+		{cfg: config.EndpointConfig{Path: "/api"}},
+		{cfg: config.EndpointConfig{Path: "/api/v2"}},
+	}
+	labels := buildTreeLabels(eps)
+	if labels[0].depth != 0 || labels[0].label != "/" {
+		t.Errorf("root: depth=%d label=%q", labels[0].depth, labels[0].label)
+	}
+	if labels[1].depth != 1 || labels[1].label != "api" {
+		t.Errorf("/api: depth=%d label=%q, want depth=1 label=api", labels[1].depth, labels[1].label)
+	}
+	if labels[2].depth != 2 || labels[2].label != "v2" {
+		t.Errorf("/api/v2: depth=%d label=%q, want depth=2 label=v2", labels[2].depth, labels[2].label)
+	}
+}
+
+func TestBuildTreeLabels_MaxDepth3_Flattens(t *testing.T) {
+	eps := []endpointState{
+		{cfg: config.EndpointConfig{Path: "/"}},
+		{cfg: config.EndpointConfig{Path: "/a"}},
+		{cfg: config.EndpointConfig{Path: "/a/b"}},
+		{cfg: config.EndpointConfig{Path: "/a/b/c"}},
+		{cfg: config.EndpointConfig{Path: "/a/b/c/d"}},
+	}
+	labels := buildTreeLabels(eps)
+	// /a/b/c/d has depth 4 from root → capped at 3
+	if labels[4].depth != 3 {
+		t.Errorf("/a/b/c/d: depth want 3, got %d", labels[4].depth)
+	}
+}
+
+func TestBuildTreeLabels_OnlyRegisteredParents(t *testing.T) {
+	eps := []endpointState{
+		{cfg: config.EndpointConfig{Path: "/"}},
+		{cfg: config.EndpointConfig{Path: "/a/b/c"}},
+	}
+	labels := buildTreeLabels(eps)
+	// /a and /a/b are not registered, so /a/b/c should be child of / at depth 1
+	if labels[1].depth != 1 {
+		t.Errorf("/a/b/c: depth want 1, got %d", labels[1].depth)
+	}
+	if labels[1].label != "a/b/c" {
+		t.Errorf("/a/b/c: label want a/b/c, got %q", labels[1].label)
+	}
+}
+
+func TestBuildTreeLabels_DynamicFlag(t *testing.T) {
+	eps := []endpointState{
+		{cfg: config.EndpointConfig{Path: "/"}, dynamic: false},
+		{cfg: config.EndpointConfig{Path: "/api"}, dynamic: true},
+	}
+	labels := buildTreeLabels(eps)
+	if labels[0].dynamic {
+		t.Error("/ should not be dynamic")
+	}
+	if !labels[1].dynamic {
+		t.Error("/api should be dynamic")
+	}
+}
+
+func TestSyncEndpoints_AddsNewDynamicEndpoint(t *testing.T) {
+	cfgs := []config.EndpointConfig{
+		{Path: "/", Rate: 1, Unit: "rps", Scheduler: "fifo", Algorithm: "strict", MaxQueueSize: 100, Overflow: "reject"},
+	}
+	reg, err := endpoint.NewRegistry(cfgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.StopAll()
+
+	ch := make(chan endpoint.Event, 16)
+	cfg := &config.Config{
+		Server:    config.ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Endpoints: cfgs,
+	}
+	m := NewModel(cfg, ch, DefaultDotThresholds(), nil, 0, nil)
+	m.registry = reg
+
+	if len(m.endpoints) != 1 {
+		t.Fatalf("initial endpoints: want 1, got %d", len(m.endpoints))
+	}
+
+	// Trigger dynamic endpoint creation via registry.
+	reg.Match("/api")
+
+	m.syncEndpoints()
+	if len(m.endpoints) != 2 {
+		t.Fatalf("after sync: want 2, got %d", len(m.endpoints))
+	}
+}
+
+func TestSyncEndpoints_PreservesExistingStats(t *testing.T) {
+	cfgs := []config.EndpointConfig{
+		{Path: "/", Rate: 1, Unit: "rps", Scheduler: "fifo", Algorithm: "strict", MaxQueueSize: 100, Overflow: "reject"},
+	}
+	reg, err := endpoint.NewRegistry(cfgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.StopAll()
+
+	ch := make(chan endpoint.Event, 16)
+	cfg := &config.Config{
+		Server:    config.ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Endpoints: cfgs,
+	}
+	m := NewModel(cfg, ch, DefaultDotThresholds(), nil, 0, nil)
+	m.registry = reg
+	m.endpoints[0].served = 42
+	m.endpoints[0].rejected = 5
+
+	m.syncEndpoints()
+	if m.endpoints[0].served != 42 {
+		t.Errorf("served: want 42, got %d", m.endpoints[0].served)
+	}
+	if m.endpoints[0].rejected != 5 {
+		t.Errorf("rejected: want 5, got %d", m.endpoints[0].rejected)
+	}
+}
+
+func TestView_TreeRendering_ShowsIndentedEndpoints(t *testing.T) {
+	cfg := &config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Endpoints: []config.EndpointConfig{
+			{Path: "/", Rate: 1, Unit: "rps", Scheduler: "fifo", Algorithm: "strict", MaxQueueSize: 10},
+			{Path: "/api", Rate: 5, Unit: "rps", Scheduler: "fifo", Algorithm: "strict", MaxQueueSize: 10},
+			{Path: "/api/v2", Rate: 5, Unit: "rps", Scheduler: "fifo", Algorithm: "strict", MaxQueueSize: 10, Dynamic: true},
+		},
+	}
+	ch := make(chan endpoint.Event, 16)
+	m := NewModel(cfg, ch, DefaultDotThresholds(), nil, 0, nil)
+	m.endpoints[2].dynamic = true
+	m.treeLabels = buildTreeLabels(m.endpoints)
+	m.width = 120
+	m.height = 20
+	view := m.View()
+	if !strings.Contains(view, "└") {
+		t.Error("view should contain tree connector └")
+	}
+}
+
+func TestView_DynamicEndpoint_Dim(t *testing.T) {
+	// Dynamic endpoint should use dynamicRowStyle (not bold).
+	cfg := &config.Config{
+		Server: config.ServerConfig{Host: "127.0.0.1", Port: 8080},
+		Endpoints: []config.EndpointConfig{
+			{Path: "/", Rate: 1, Unit: "rps", Scheduler: "fifo", Algorithm: "strict", MaxQueueSize: 10},
+			{Path: "/dyn", Rate: 1, Unit: "rps", Scheduler: "fifo", Algorithm: "strict", MaxQueueSize: 10},
+		},
+	}
+	ch := make(chan endpoint.Event, 16)
+	m := NewModel(cfg, ch, DefaultDotThresholds(), nil, 0, nil)
+	m.endpoints[1].dynamic = true
+	m.treeLabels = buildTreeLabels(m.endpoints)
+	m.width = 100
+	m.height = 20
+	// Just verify it renders without panic.
+	view := m.View()
+	if view == "" {
+		t.Error("view should not be empty")
 	}
 }
 

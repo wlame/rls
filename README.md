@@ -92,6 +92,7 @@ defaults:
   unit: rps                # rps | rpm
   max_queue_size: 1000
   overflow: reject         # reject (429) | block (wait forever)
+  max_dynamic_endpoints: 1000  # cap on auto-created dynamic endpoints
 
 endpoints:
   # Root "/" is auto-created at 1 RPS if not specified
@@ -166,6 +167,40 @@ When the queue is full (`overflow: reject`) or the estimated wait exceeds `queue
 ```json
 {"ok": false, "error": "queue full"}
 {"ok": false, "error": "estimated wait exceeds timeout"}
+```
+
+### Dynamic endpoints (hierarchical paths)
+
+Requests to unconfigured paths automatically create **dynamic endpoints** that inherit configuration from the nearest configured ancestor via parent-path walking.
+
+```
+Request to /api/v2/users
+  1. No exact match → walk parents
+  2. /api/v2 not configured → /api configured → use as parent
+  3. Create /api/v2/users with /api's rate, scheduler, algorithm, etc.
+```
+
+Each dynamic endpoint gets its **own independent queue and limiter** — it does not share the parent's rate limit. This provides per-path visibility and independent statistics. Dynamic endpoints persist until restart and appear in the TUI and attach mode.
+
+```yaml
+defaults:
+  max_dynamic_endpoints: 1000   # DoS protection cap (default 1000)
+
+endpoints:
+  - path: "/"
+    rate: 1
+  - path: "/api"
+    rate: 10
+  # Requests to /api/v2, /api/v2/users, etc. auto-create endpoints at 10 RPS
+```
+
+In the interactive TUI, configured endpoints appear in **bold bright white** and dynamic endpoints in a **dimmer style**, rendered as a tree:
+
+```
+▶ /              FIFO 1rps   │ ●●●         [3/60]
+  └ api          FIFO 10rps  │             [0/500]
+    └ v2/users   FIFO 10rps  │ ●           [1/500]
+  └ dynamic      FIFO 1rps   │             [0/60]
 ```
 
 ### Admission timeout

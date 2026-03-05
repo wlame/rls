@@ -200,8 +200,12 @@ func TestRegistry_PrefixMatch(t *testing.T) {
 	if !ok {
 		t.Fatal("expected prefix match for /api/users")
 	}
-	if ep.cfg.Path != "/api" {
-		t.Errorf("prefix match returned %q, want /api", ep.cfg.Path)
+	// Dynamic endpoint creation: path should be the request path with inherited config.
+	if ep.cfg.Path != "/api/users" {
+		t.Errorf("prefix match returned %q, want /api/users (dynamic)", ep.cfg.Path)
+	}
+	if !ep.cfg.Dynamic {
+		t.Error("expected dynamic endpoint")
 	}
 }
 
@@ -763,7 +767,11 @@ func TestRegistry_LongestPrefixWins(t *testing.T) {
 	if !ok {
 		t.Fatal("expected match")
 	}
-	if ep.cfg.Path != "/api/v2" {
-		t.Errorf("expected longest prefix /api/v2, got %q", ep.cfg.Path)
+	// Dynamic endpoint creation: path should be request path, inheriting from nearest parent /api/v2.
+	if ep.cfg.Path != "/api/v2/users" {
+		t.Errorf("expected dynamic /api/v2/users, got %q", ep.cfg.Path)
+	}
+	if !ep.cfg.Dynamic {
+		t.Error("expected dynamic endpoint")
 	}
 }
