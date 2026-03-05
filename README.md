@@ -4,6 +4,23 @@ A small, async Go HTTP service that acts as a rate-limiting gate for outgoing HT
 
 Instead of implementing rate limiting inside each client application, clients make a blocking HTTP call to rls before each outgoing request. rls queues the request and responds only when the configured rate allows. The calling application is blocked for exactly the right amount of time.
 
+## Why not a proxy?
+
+rls is **not** a proxy. It never sees your actual requests — no credentials, no request bodies, no response data passes through it. Your client calls rls, waits for the green light, then talks to the target service directly.
+
+This is intentional. A pure timing gate means:
+
+- **No business logic** — rls has zero knowledge of your services, APIs, or data formats
+- **No credentials exposure** — API keys, tokens, and auth headers never touch rls
+- **No data in transit** — request/response payloads go straight from client to target
+- **No retries or timeouts** — that's your client's concern, not the rate limiter's
+- **No caching or status code analysis** — rls doesn't interpret responses
+- **No redirect logic** — rls doesn't follow or rewrite URLs
+- **No WebSockets or long polling** — simple blocking HTTP, nothing more
+- **No service-specific knowledge** — the same rls instance serves any number of unrelated services
+
+This makes rls a **Rate Limit as-a-Service** — a single shared piece of infrastructure that any team, any language, any service can use without coupling to it. One rls instance can gate requests to GitHub, OpenAI, Slack, and your internal APIs simultaneously, each with its own rate and scheduling strategy.
+
 ## Why
 
 - **Client-agnostic**: works with any language, any HTTP client
