@@ -401,6 +401,43 @@ func TestInheritFrom_DynamicAndPathPreserved(t *testing.T) {
 	}
 }
 
+func TestInheritFrom_LatencyCompensation(t *testing.T) {
+	parent := EndpointConfig{Path: "/", Rate: 10, LatencyCompensation: 20}
+	child := EndpointConfig{Path: "/child"}
+	got := InheritFrom(child, parent)
+	if got.LatencyCompensation != 20 {
+		t.Errorf("latency_compensation: got %f, want 20", got.LatencyCompensation)
+	}
+
+	// Child with own value keeps it.
+	child2 := EndpointConfig{Path: "/child2", LatencyCompensation: 5}
+	got2 := InheritFrom(child2, parent)
+	if got2.LatencyCompensation != 5 {
+		t.Errorf("latency_compensation: got %f, want 5", got2.LatencyCompensation)
+	}
+}
+
+func TestApplyDefaults_LatencyCompensation(t *testing.T) {
+	cfg := &Config{
+		Defaults: Defaults{LatencyCompensation: 15},
+		Endpoints: []EndpointConfig{
+			{Path: "/", Rate: 1},
+			{Path: "/api", Rate: 2, LatencyCompensation: 10},
+		},
+	}
+	ApplyDefaults(cfg)
+
+	// Root should inherit from defaults.
+	for _, ep := range cfg.Endpoints {
+		if ep.Path == "/" && ep.LatencyCompensation != 15 {
+			t.Errorf("/: latency_compensation: got %f, want 15", ep.LatencyCompensation)
+		}
+		if ep.Path == "/api" && ep.LatencyCompensation != 10 {
+			t.Errorf("/api: latency_compensation: got %f, want 10 (own value)", ep.LatencyCompensation)
+		}
+	}
+}
+
 func TestMergeOverrides_Empty(t *testing.T) {
 	cfg := &Config{Server: ServerConfig{Host: "1.2.3.4", Port: 1234}}
 	if err := MergeOverrides(cfg, map[string]string{}); err != nil {

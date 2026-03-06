@@ -3,6 +3,7 @@ package limiter
 import (
 	"context"
 	"fmt"
+	"math"
 )
 
 // Limiter controls when rate-limited slots are made available.
@@ -21,8 +22,9 @@ type BurstQuerier interface {
 
 // LimiterOptions carries algorithm-specific configuration.
 type LimiterOptions struct {
-	BurstSize     int // token_bucket: max accumulated tokens
-	WindowSeconds int // sliding_window: observation window length
+	BurstSize      int     // token_bucket: max accumulated tokens
+	WindowSeconds  int     // sliding_window: observation window length
+	CompensationMs float64 // latency compensation: release tickets early by this many ms
 }
 
 // New creates a Limiter for the given algorithm, rate, and unit.
@@ -32,6 +34,11 @@ func New(algorithm string, rate float64, unit string, opts LimiterOptions) (Limi
 	rps := toRPS(rate, unit)
 	if rps <= 0 {
 		return nil, fmt.Errorf("rate must be > 0, got %f %s", rate, unit)
+	}
+
+	if opts.CompensationMs > 0 {
+		interval := 1.0/rps - opts.CompensationMs/1000.0
+		rps = 1.0 / math.Max(0.001, interval)
 	}
 
 	switch algorithm {

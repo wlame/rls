@@ -21,28 +21,32 @@ type Response struct {
 	Overflow      string  `json:"overflow"`
 	BurstSize     int     `json:"burst_size,omitempty"`
 	WindowSeconds int     `json:"window_seconds,omitempty"`
-	QueueTimeout  float64 `json:"queue_timeout,omitempty"`
-	Dynamic       bool    `json:"dynamic,omitempty"`
+	QueueTimeout        float64 `json:"queue_timeout,omitempty"`
+	LatencyCompensation float64 `json:"latency_compensation,omitempty"`
+	NetworkLatencyMs    *int64  `json:"network_latency_ms,omitempty"`
+	Dynamic             bool    `json:"dynamic,omitempty"`
 }
 
 // buildResponse constructs a Response from the endpoint config, current queue depth,
 // and the time the ticket was enqueued. All config fields are included — for dynamic
 // endpoints this reflects the fully resolved inherited values.
-func buildResponse(cfg config.EndpointConfig, queueDepth int, enqueuedAt time.Time) Response {
+func buildResponse(cfg config.EndpointConfig, queueDepth int, enqueuedAt time.Time, networkLatencyMs *int64) Response {
 	return Response{
-		OK:            true,
-		Endpoint:      cfg.Path,
-		QueuedForMs:   time.Since(enqueuedAt).Milliseconds(),
-		QueueDepth:    queueDepth,
-		Rate:          cfg.Rate,
-		Unit:          cfg.Unit,
-		Scheduler:     cfg.Scheduler,
-		Algorithm:     cfg.Algorithm,
-		MaxQueueSize:  cfg.MaxQueueSize,
-		Overflow:      cfg.Overflow,
-		BurstSize:     cfg.BurstSize,
-		WindowSeconds: cfg.WindowSeconds,
-		QueueTimeout:  cfg.QueueTimeout,
-		Dynamic:       cfg.Dynamic,
+		OK:                  true,
+		Endpoint:            cfg.Path,
+		QueuedForMs:         time.Since(enqueuedAt).Milliseconds(),
+		QueueDepth:          queueDepth,
+		Rate:                cfg.Rate,
+		Unit:                cfg.Unit,
+		Scheduler:           cfg.Scheduler,
+		Algorithm:           cfg.Algorithm,
+		MaxQueueSize:        cfg.MaxQueueSize,
+		Overflow:            cfg.Overflow,
+		BurstSize:           cfg.BurstSize,
+		WindowSeconds:       cfg.WindowSeconds,
+		QueueTimeout:        cfg.QueueTimeout,
+		LatencyCompensation: cfg.LatencyCompensation,
+		NetworkLatencyMs:    networkLatencyMs,
+		Dynamic:             cfg.Dynamic,
 	}
 }

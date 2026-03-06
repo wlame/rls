@@ -34,8 +34,9 @@ func New(cfg config.EndpointConfig, opts ...Option) (*Endpoint, error) {
 	}
 
 	l, err := limiter.New(cfg.Algorithm, cfg.Rate, cfg.Unit, limiter.LimiterOptions{
-		BurstSize:     cfg.BurstSize,
-		WindowSeconds: cfg.WindowSeconds,
+		BurstSize:      cfg.BurstSize,
+		WindowSeconds:  cfg.WindowSeconds,
+		CompensationMs: cfg.LatencyCompensation,
 	})
 	if err != nil {
 		return nil, err
@@ -155,7 +156,18 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := buildResponse(e.cfg, e.queue.Len(), ticket.EnqueuedAt)
+	var networkLatencyMs *int64
+	if sentAt := r.Header.Get("X-Sent-At"); sentAt != "" {
+		if ms, err := strconv.ParseInt(sentAt, 10, 64); err == nil {
+			latency := time.Now().UnixMilli() - ms
+			if latency < 0 {
+				latency = 0
+			}
+			networkLatencyMs = &latency
+		}
+	}
+
+	resp := buildResponse(e.cfg, e.queue.Len(), ticket.EnqueuedAt, networkLatencyMs)
 	e.emit(Event{Kind: EventServed, Path: e.cfg.Path, WaitedMs: resp.QueuedForMs, QueueDepth: resp.QueueDepth})
 	req := r.URL.RawQuery
 	if req == "" {
