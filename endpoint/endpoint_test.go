@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -147,7 +148,7 @@ func TestEndpoint_PriorityHeader_Invalid(t *testing.T) {
 func TestBuildResponse_Fields(t *testing.T) {
 	cfg := baseConfig("/test", 5)
 	now := time.Now().Add(-50 * time.Millisecond) // simulated 50ms wait
-	resp := buildResponse(cfg, 3, now)
+	resp := buildResponse(cfg, 3, now, nil)
 
 	if !resp.OK {
 		t.Error("ok: want true")
@@ -189,7 +190,7 @@ func TestBuildResponse_AllConfigFields(t *testing.T) {
 		QueueTimeout:  5.5,
 		Dynamic:       false,
 	}
-	resp := buildResponse(cfg, 0, time.Now())
+	resp := buildResponse(cfg, 0, time.Now(), nil)
 
 	if resp.Algorithm != "token_bucket" {
 		t.Errorf("algorithm: got %q", resp.Algorithm)
@@ -222,7 +223,7 @@ func TestBuildResponse_DynamicEndpoint(t *testing.T) {
 		Overflow:     "reject",
 		Dynamic:      true,
 	}
-	resp := buildResponse(cfg, 2, time.Now().Add(-100*time.Millisecond))
+	resp := buildResponse(cfg, 2, time.Now().Add(-100*time.Millisecond), nil)
 
 	if !resp.Dynamic {
 		t.Error("dynamic: want true for dynamic endpoint")
@@ -244,7 +245,7 @@ func TestBuildResponse_JSONContainsAllFields(t *testing.T) {
 		Algorithm: "token_bucket", MaxQueueSize: 500, Overflow: "reject",
 		BurstSize: 20, WindowSeconds: 60, QueueTimeout: 3, Dynamic: true,
 	}
-	resp := buildResponse(cfg, 5, time.Now().Add(-200*time.Millisecond))
+	resp := buildResponse(cfg, 5, time.Now().Add(-200*time.Millisecond), nil)
 
 	data, err := json.Marshal(resp)
 	if err != nil {
@@ -275,7 +276,7 @@ func TestBuildResponse_OmitsZeroOptionalFields(t *testing.T) {
 		Overflow:     "reject",
 		// BurstSize, WindowSeconds, QueueTimeout all zero
 	}
-	resp := buildResponse(cfg, 0, time.Now())
+	resp := buildResponse(cfg, 0, time.Now(), nil)
 
 	if resp.BurstSize != 0 {
 		t.Errorf("burst_size: got %d, want 0", resp.BurstSize)
@@ -924,6 +925,89 @@ func TestEndpoint_ClientDisconnect_HandlerReturns(t *testing.T) {
 
 	ep.Stop()
 	wg.Wait()
+}
+
+func TestEndpoint_XSentAt_ReturnsNetworkLatency(t *testing.T) {
+	ep, err := New(baseConfig("/", 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	sentAt := time.Now().Add(-50 * time.Millisecond).UnixMilli()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Sent-At", strconv.FormatInt(sentAt, 10))
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	var resp Response
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.NetworkLatencyMs == nil {
+		t.Fatal("expected network_latency_ms in response")
+	}
+	if *resp.NetworkLatencyMs < 40 || *resp.NetworkLatencyMs > 200 {
+		t.Errorf("network_latency_ms: got %d, want ~50", *resp.NetworkLatencyMs)
+	}
+}
+
+func TestEndpoint_XSentAt_MissingHeader_OmitsField(t *testing.T) {
+	ep, err := New(baseConfig("/", 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if strings.Contains(rr.Body.String(), "network_latency_ms") {
+		t.Error("network_latency_ms should be omitted when X-Sent-At is absent")
+	}
+}
+
+func TestEndpoint_XSentAt_FutureTimestamp_ClampsToZero(t *testing.T) {
+	ep, err := New(baseConfig("/", 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	sentAt := time.Now().Add(10 * time.Second).UnixMilli()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Sent-At", strconv.FormatInt(sentAt, 10))
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	var resp Response
+	if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.NetworkLatencyMs == nil {
+		t.Fatal("expected network_latency_ms in response")
+	}
+	if *resp.NetworkLatencyMs != 0 {
+		t.Errorf("network_latency_ms: got %d, want 0 (clamped)", *resp.NetworkLatencyMs)
+	}
+}
+
+func TestEndpoint_XSentAt_InvalidValue_OmitsField(t *testing.T) {
+	ep, err := New(baseConfig("/", 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-Sent-At", "not-a-number")
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if strings.Contains(rr.Body.String(), "network_latency_ms") {
+		t.Error("network_latency_ms should be omitted when X-Sent-At is invalid")
+	}
 }
 
 func TestRegistry_LongestPrefixWins(t *testing.T) {

@@ -21,6 +21,7 @@ type Defaults struct {
 	MaxQueueSize        int     `yaml:"max_queue_size" json:"max_queue_size"`
 	Overflow            string  `yaml:"overflow" json:"overflow"`
 	QueueTimeout        float64 `yaml:"queue_timeout" json:"queue_timeout"`
+	LatencyCompensation float64 `yaml:"latency_compensation" json:"latency_compensation"`
 	MaxDynamicEndpoints int     `yaml:"max_dynamic_endpoints" json:"max_dynamic_endpoints"`
 }
 
@@ -35,8 +36,9 @@ type EndpointConfig struct {
 	Overflow      string  `yaml:"overflow" json:"overflow"`
 	BurstSize     int     `yaml:"burst_size" json:"burst_size"`
 	WindowSeconds int     `yaml:"window_seconds" json:"window_seconds"`
-	QueueTimeout  float64 `yaml:"queue_timeout" json:"queue_timeout"`
-	Dynamic       bool    `yaml:"-" json:"-"`
+	QueueTimeout        float64 `yaml:"queue_timeout" json:"queue_timeout"`
+	LatencyCompensation float64 `yaml:"latency_compensation" json:"latency_compensation"`
+	Dynamic             bool    `yaml:"-" json:"-"`
 }
 
 // Config is the top-level configuration.
@@ -132,6 +134,9 @@ func ApplyDefaults(cfg *Config) {
 		if ep.Overflow == "" {
 			ep.Overflow = d.Overflow
 		}
+		if ep.LatencyCompensation == 0 {
+			ep.LatencyCompensation = d.LatencyCompensation
+		}
 	}
 }
 
@@ -164,6 +169,9 @@ func InheritFrom(child, parent EndpointConfig) EndpointConfig {
 	}
 	if child.QueueTimeout == 0 {
 		child.QueueTimeout = parent.QueueTimeout
+	}
+	if child.LatencyCompensation == 0 {
+		child.LatencyCompensation = parent.LatencyCompensation
 	}
 	return child
 }

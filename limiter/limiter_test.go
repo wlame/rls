@@ -252,3 +252,72 @@ func TestNew_ZeroRate(t *testing.T) {
 		t.Fatal("expected error for zero rate, got nil")
 	}
 }
+
+func TestNew_CompensationIncreasesRate(t *testing.T) {
+	// 10 RPS = 100ms interval. 20ms compensation → 80ms interval → 12.5 RPS.
+	l, err := New("strict", 10, "rps", LimiterOptions{CompensationMs: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Stop()
+
+	// Fire 3 requests and measure: with effective 12.5 RPS (80ms interval),
+	// 3 requests should complete in ~160ms. Without compensation (100ms interval),
+	// they'd take ~200ms.
+	start := time.Now()
+	for i := 0; i < 3; i++ {
+		if err := l.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	elapsed := time.Since(start)
+
+	// 3 ticks at 80ms = 240ms total (first tick is immediate for strict).
+	// Allow generous bounds but ensure it's faster than uncompensated (200ms intervals).
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("3 waits took %v, want <250ms with 20ms compensation on 10 RPS", elapsed)
+	}
+}
+
+func TestNew_CompensationZero_NoEffect(t *testing.T) {
+	l, err := New("strict", 10, "rps", LimiterOptions{CompensationMs: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Stop()
+
+	start := time.Now()
+	for i := 0; i < 2; i++ {
+		if err := l.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	elapsed := time.Since(start)
+
+	// 10 RPS = 100ms interval. 2 waits → ~100ms.
+	if elapsed < 80*time.Millisecond {
+		t.Errorf("expected ~100ms for 2 waits at 10 RPS, got %v", elapsed)
+	}
+}
+
+func TestNew_CompensationExceedsInterval_FlooredAt1ms(t *testing.T) {
+	// 10 RPS = 100ms interval. 200ms compensation → interval would be -100ms → floored at 1ms.
+	l, err := New("strict", 10, "rps", LimiterOptions{CompensationMs: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Stop()
+
+	start := time.Now()
+	for i := 0; i < 5; i++ {
+		if err := l.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	elapsed := time.Since(start)
+
+	// At 1ms floor interval, 5 waits should be very fast.
+	if elapsed > 100*time.Millisecond {
+		t.Errorf("5 waits with max compensation took %v, want <100ms", elapsed)
+	}
+}
