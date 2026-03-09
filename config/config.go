@@ -23,6 +23,8 @@ type Defaults struct {
 	QueueTimeout        float64 `yaml:"queue_timeout" json:"queue_timeout"`
 	LatencyCompensation float64 `yaml:"latency_compensation" json:"latency_compensation"`
 	MaxDynamicEndpoints int     `yaml:"max_dynamic_endpoints" json:"max_dynamic_endpoints"`
+	TokensPerWindow     int     `yaml:"tokens_per_window" json:"tokens_per_window"`
+	DefaultTokens       int     `yaml:"default_tokens" json:"default_tokens"`
 }
 
 // EndpointConfig describes a single rate-limited endpoint.
@@ -38,6 +40,8 @@ type EndpointConfig struct {
 	WindowSeconds int     `yaml:"window_seconds" json:"window_seconds"`
 	QueueTimeout        float64 `yaml:"queue_timeout" json:"queue_timeout"`
 	LatencyCompensation float64 `yaml:"latency_compensation" json:"latency_compensation"`
+	TokensPerWindow     int     `yaml:"tokens_per_window" json:"tokens_per_window"`
+	DefaultTokens       int     `yaml:"default_tokens" json:"default_tokens"`
 	Dynamic             bool    `yaml:"-" json:"-"`
 }
 
@@ -72,7 +76,26 @@ func Load(path string) (*Config, error) {
 
 	applyServerDefaults(&cfg)
 	ApplyDefaults(&cfg)
+
+	if err := validateEndpoints(cfg.Endpoints); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
+}
+
+// validateEndpoints checks algorithm-specific constraints.
+func validateEndpoints(endpoints []EndpointConfig) error {
+	for _, ep := range endpoints {
+		if ep.Algorithm == "token_window" {
+			if ep.TokensPerWindow <= 0 {
+				return fmt.Errorf("endpoint %q: token_window requires tokens_per_window > 0", ep.Path)
+			}
+			if ep.WindowSeconds <= 0 {
+				return fmt.Errorf("endpoint %q: token_window requires window_seconds > 0", ep.Path)
+			}
+		}
+	}
+	return nil
 }
 
 // applyServerDefaults fills in server-level defaults.
@@ -137,6 +160,16 @@ func ApplyDefaults(cfg *Config) {
 		if ep.LatencyCompensation == 0 {
 			ep.LatencyCompensation = d.LatencyCompensation
 		}
+		if ep.TokensPerWindow == 0 {
+			ep.TokensPerWindow = d.TokensPerWindow
+		}
+		if ep.DefaultTokens == 0 {
+			ep.DefaultTokens = d.DefaultTokens
+		}
+		// token_window: default_tokens must be at least 1
+		if ep.Algorithm == "token_window" && ep.DefaultTokens == 0 {
+			ep.DefaultTokens = 1
+		}
 	}
 }
 
@@ -172,6 +205,12 @@ func InheritFrom(child, parent EndpointConfig) EndpointConfig {
 	}
 	if child.LatencyCompensation == 0 {
 		child.LatencyCompensation = parent.LatencyCompensation
+	}
+	if child.TokensPerWindow == 0 {
+		child.TokensPerWindow = parent.TokensPerWindow
+	}
+	if child.DefaultTokens == 0 {
+		child.DefaultTokens = parent.DefaultTokens
 	}
 	return child
 }

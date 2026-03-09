@@ -1,6 +1,9 @@
 package endpoint
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"sort"
 	"sync"
 	"testing"
@@ -197,6 +200,83 @@ func TestRegistry_DynamicCreation_MarkedDynamic(t *testing.T) {
 	ep, _ := reg.Match("/dynamic/test")
 	if !ep.cfg.Dynamic {
 		t.Error("dynamic endpoint should have Dynamic=true")
+	}
+}
+
+func TestRegistry_DynamicCreation_TokenWindowInherited(t *testing.T) {
+	cfgs := []config.EndpointConfig{
+		{
+			Path: "/api", Algorithm: "token_window", Scheduler: "fifo",
+			MaxQueueSize: 100, Overflow: "reject",
+			TokensPerWindow: 500, WindowSeconds: 10, DefaultTokens: 5,
+		},
+	}
+	reg, err := NewRegistryWithOpts(cfgs, []RegistryOption{WithMaxDynamic(10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.StopAll()
+
+	ep, ok := reg.Match("/api/sub")
+	if !ok {
+		t.Fatal("expected match")
+	}
+	if ep.cfg.Algorithm != "token_window" {
+		t.Errorf("algorithm: got %q, want token_window", ep.cfg.Algorithm)
+	}
+	if ep.cfg.TokensPerWindow != 500 {
+		t.Errorf("tokens_per_window: got %d, want 500", ep.cfg.TokensPerWindow)
+	}
+	if ep.cfg.DefaultTokens != 5 {
+		t.Errorf("default_tokens: got %d, want 5", ep.cfg.DefaultTokens)
+	}
+	if ep.cfg.WindowSeconds != 10 {
+		t.Errorf("window_seconds: got %d, want 10", ep.cfg.WindowSeconds)
+	}
+	if !ep.cfg.Dynamic {
+		t.Error("expected dynamic=true")
+	}
+	if ep.tokenWindow == nil {
+		t.Error("dynamic token_window endpoint should have tokenWindow set")
+	}
+}
+
+func TestRegistry_DynamicCreation_TokenWindowServesRequests(t *testing.T) {
+	cfgs := []config.EndpointConfig{
+		{
+			Path: "/api", Algorithm: "token_window", Scheduler: "fifo",
+			MaxQueueSize: 100, Overflow: "reject",
+			TokensPerWindow: 100, WindowSeconds: 60, DefaultTokens: 1,
+		},
+	}
+	reg, err := NewRegistryWithOpts(cfgs, []RegistryOption{WithMaxDynamic(10)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.StopAll()
+
+	ep, ok := reg.Match("/api/v2")
+	if !ok {
+		t.Fatal("expected match")
+	}
+
+	// Serve a token-window request on the dynamic endpoint.
+	req := httptest.NewRequest(http.MethodGet, "/api/v2?tokens=30", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rr.Code)
+	}
+
+	var resp Response
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+
+	if resp.TokensConsumed == nil || *resp.TokensConsumed != 30 {
+		t.Errorf("tokens_consumed: want 30, got %v", resp.TokensConsumed)
+	}
+	if resp.TokensRemaining == nil || *resp.TokensRemaining != 70 {
+		t.Errorf("tokens_remaining: want 70, got %v", resp.TokensRemaining)
 	}
 }
 

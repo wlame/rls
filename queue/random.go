@@ -43,6 +43,22 @@ func (q *RandomQueue) Pop() *Ticket {
 	return t
 }
 
+func (q *RandomQueue) PopWhere(fn func(t *Ticket) bool) []*Ticket {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	var matched []*Ticket
+	remaining := q.items[:0]
+	for _, t := range q.items {
+		if fn(t) {
+			matched = append(matched, t)
+		} else {
+			remaining = append(remaining, t)
+		}
+	}
+	q.items = remaining
+	return matched
+}
+
 func (q *RandomQueue) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()

@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/wlame/rls/config"
@@ -18,11 +19,13 @@ import (
 type Endpoint struct {
 	cfg    config.EndpointConfig
 	queue  queue.Queue
-	lim    limiter.Limiter
-	work   chan struct{} // signals dispatch that a ticket was just pushed
+	lim    limiter.Limiter       // nil for token_window
+	work   chan struct{}          // signals dispatch that a ticket was just pushed
 	ctx    context.Context
 	cancel context.CancelFunc
-	events chan<- Event // nil when no sink configured
+	events chan<- Event           // nil when no sink configured
+	tokenWindow   *limiter.TokenWindow // non-nil only for token_window algorithm
+	pendingTokens int64               // atomic; total token cost of queued tickets (for admission timeout)
 }
 
 // New creates an Endpoint from its configuration, starts the dispatcher goroutine,
@@ -33,28 +36,41 @@ func New(cfg config.EndpointConfig, opts ...Option) (*Endpoint, error) {
 		return nil, err
 	}
 
-	l, err := limiter.New(cfg.Algorithm, cfg.Rate, cfg.Unit, limiter.LimiterOptions{
-		BurstSize:      cfg.BurstSize,
-		WindowSeconds:  cfg.WindowSeconds,
-		CompensationMs: cfg.LatencyCompensation,
-	})
-	if err != nil {
-		return nil, err
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	ep := &Endpoint{
 		cfg:    cfg,
 		queue:  q,
-		lim:    l,
 		work:   make(chan struct{}, cfg.MaxQueueSize),
 		ctx:    ctx,
 		cancel: cancel,
 	}
+
+	if cfg.Algorithm == "token_window" {
+		ep.tokenWindow = limiter.NewTokenWindow(
+			cfg.TokensPerWindow,
+			time.Duration(cfg.WindowSeconds)*time.Second,
+		)
+	} else {
+		l, err := limiter.New(cfg.Algorithm, cfg.Rate, cfg.Unit, limiter.LimiterOptions{
+			BurstSize:      cfg.BurstSize,
+			WindowSeconds:  cfg.WindowSeconds,
+			CompensationMs: cfg.LatencyCompensation,
+		})
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		ep.lim = l
+	}
+
 	for _, opt := range opts {
 		opt(ep)
 	}
-	go ep.dispatch()
+	if ep.tokenWindow != nil {
+		go ep.dispatchTokenWindow()
+	} else {
+		go ep.dispatchStandard()
+	}
 	return ep, nil
 }
 
@@ -70,19 +86,14 @@ func (e *Endpoint) emit(ev Event) {
 	}
 }
 
-// dispatch runs the rate-limited dispatch loop: wait for a queued ticket,
-// then call Wait() on the limiter to consume one slot before releasing it.
-// Waiting for work before calling Wait() is critical for burst-capable limiters
-// (token bucket): Wait() only consumes a token when a request is actually ready.
-func (e *Endpoint) dispatch() {
+// dispatchStandard runs the rate-limited dispatch loop for non-token-window algorithms.
+func (e *Endpoint) dispatchStandard() {
 	for {
-		// Block until a ticket has been pushed into the queue.
 		select {
 		case <-e.ctx.Done():
 			return
 		case <-e.work:
 		}
-		// Consume one rate-limiter slot, then release the ticket.
 		if err := e.lim.Wait(e.ctx); err != nil {
 			return
 		}
@@ -92,12 +103,57 @@ func (e *Endpoint) dispatch() {
 	}
 }
 
+// dispatchTokenWindow runs the dispatch loop for token_window endpoints.
+// It triggers on both new ticket arrivals and window resets.
+func (e *Endpoint) dispatchTokenWindow() {
+	for {
+		select {
+		case <-e.ctx.Done():
+			return
+		case <-e.work:
+			e.releaseTokenFitting()
+		case <-e.tokenWindow.ResetCh():
+			e.releaseTokenFitting()
+		}
+	}
+}
+
+// releaseTokenFitting pops all tickets whose cost fits in the current window
+// and releases them.
+func (e *Endpoint) releaseTokenFitting() {
+	released := e.queue.PopWhere(func(t *queue.Ticket) bool {
+		return e.tokenWindow.TryConsume(t.Cost)
+	})
+	for _, t := range released {
+		t.Release <- struct{}{}
+		atomic.AddInt64(&e.pendingTokens, -int64(t.Cost))
+		e.emit(Event{Kind: EventServed, Path: e.cfg.Path})
+	}
+}
+
 // Handle is the http.HandlerFunc for this endpoint.
 func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 	ticket := &queue.Ticket{
 		Release:    make(chan struct{}, 1),
 		Priority:   parsePriority(r),
 		EnqueuedAt: time.Now(),
+	}
+
+	// Token window: read cost from ?tokens=N, reject impossible requests.
+	if e.tokenWindow != nil {
+		cost := e.cfg.DefaultTokens
+		if v := r.URL.Query().Get("tokens"); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+				cost = parsed
+			}
+		}
+		ticket.Cost = cost
+		if cost > e.tokenWindow.Capacity() {
+			e.emit(Event{Kind: EventRejected, Path: e.cfg.Path})
+			writeError(w, http.StatusTooManyRequests,
+				"token cost "+strconv.Itoa(cost)+" exceeds window capacity "+strconv.Itoa(e.tokenWindow.Capacity()))
+			return
+		}
 	}
 
 	// Admission timeout: predict wait and reject early if it exceeds the threshold.
@@ -138,6 +194,9 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	e.emit(Event{Kind: EventQueued, Path: e.cfg.Path, Priority: ticket.Priority})
+	if e.tokenWindow != nil {
+		atomic.AddInt64(&e.pendingTokens, int64(ticket.Cost))
+	}
 	// Notify the dispatcher that a ticket is ready.
 	// Non-blocking: work is sized to MaxQueueSize so it can never be full
 	// when a push just succeeded.
@@ -153,6 +212,8 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 	case <-r.Context().Done():
 		// Client disconnected. The ticket remains in the queue and the dispatcher
 		// will eventually pop and release it (harmless: Release is buffered).
+		// Note: pendingTokens is NOT decremented here because the ticket is still
+		// in the queue and will be decremented when the dispatcher releases it.
 		return
 	}
 
@@ -167,7 +228,16 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp := buildResponse(e.cfg, e.queue.Len(), ticket.EnqueuedAt, networkLatencyMs)
+	var twi *tokenWindowInfo
+	if e.tokenWindow != nil {
+		twi = &tokenWindowInfo{
+			Consumed:  ticket.Cost,
+			Remaining: e.tokenWindow.Remaining(),
+			Capacity:  e.tokenWindow.Capacity(),
+			Waiting:   e.queue.Len(),
+		}
+	}
+	resp := buildResponse(e.cfg, e.queue.Len(), ticket.EnqueuedAt, networkLatencyMs, twi)
 	e.emit(Event{Kind: EventServed, Path: e.cfg.Path, WaitedMs: resp.QueuedForMs, QueueDepth: resp.QueueDepth})
 	req := r.URL.RawQuery
 	if req == "" {
@@ -197,7 +267,12 @@ func (e *Endpoint) Path() string {
 // Stop shuts down the dispatcher and limiter.
 func (e *Endpoint) Stop() {
 	e.cancel()
-	e.lim.Stop()
+	if e.lim != nil {
+		e.lim.Stop()
+	}
+	if e.tokenWindow != nil {
+		e.tokenWindow.Stop()
+	}
 }
 
 // estimateWait predicts how long a new request would wait in the queue.
@@ -206,6 +281,17 @@ func (e *Endpoint) estimateWait() time.Duration {
 	sched := e.cfg.Scheduler
 	if sched == "lifo" || sched == "random" {
 		return 0
+	}
+
+	// Token window: estimate based on pending token cost.
+	if e.tokenWindow != nil {
+		pending := atomic.LoadInt64(&e.pendingTokens)
+		cap := int64(e.tokenWindow.Capacity())
+		if cap <= 0 {
+			return 0
+		}
+		windowsNeeded := int64(math.Ceil(float64(pending) / float64(cap)))
+		return time.Duration(windowsNeeded) * time.Duration(e.cfg.WindowSeconds) * time.Second
 	}
 
 	rps := e.cfg.Rate

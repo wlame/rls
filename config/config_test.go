@@ -447,3 +447,147 @@ func TestMergeOverrides_Empty(t *testing.T) {
 		t.Error("empty overrides should not change config")
 	}
 }
+
+// --- Token window config tests ---
+
+func TestApplyDefaults_TokenWindowFields(t *testing.T) {
+	cfg := &Config{
+		Defaults: Defaults{TokensPerWindow: 100, DefaultTokens: 5},
+		Endpoints: []EndpointConfig{
+			{Path: "/", Rate: 1},
+			{Path: "/api", Rate: 1, Algorithm: "token_window", WindowSeconds: 10},
+			{Path: "/custom", Rate: 1, Algorithm: "token_window", WindowSeconds: 10, TokensPerWindow: 200, DefaultTokens: 10},
+		},
+	}
+	ApplyDefaults(cfg)
+
+	for _, ep := range cfg.Endpoints {
+		switch ep.Path {
+		case "/":
+			if ep.TokensPerWindow != 100 {
+				t.Errorf("/: tokens_per_window: got %d, want 100", ep.TokensPerWindow)
+			}
+			if ep.DefaultTokens != 5 {
+				t.Errorf("/: default_tokens: got %d, want 5", ep.DefaultTokens)
+			}
+		case "/api":
+			if ep.TokensPerWindow != 100 {
+				t.Errorf("/api: tokens_per_window: got %d, want 100 (from defaults)", ep.TokensPerWindow)
+			}
+			if ep.DefaultTokens != 5 {
+				t.Errorf("/api: default_tokens: got %d, want 5 (from defaults)", ep.DefaultTokens)
+			}
+		case "/custom":
+			if ep.TokensPerWindow != 200 {
+				t.Errorf("/custom: tokens_per_window: got %d, want 200 (own value)", ep.TokensPerWindow)
+			}
+			if ep.DefaultTokens != 10 {
+				t.Errorf("/custom: default_tokens: got %d, want 10 (own value)", ep.DefaultTokens)
+			}
+		}
+	}
+}
+
+func TestApplyDefaults_TokenWindow_DefaultTokensFallsTo1(t *testing.T) {
+	cfg := &Config{
+		Endpoints: []EndpointConfig{
+			{Path: "/", Rate: 1},
+			{Path: "/api", Rate: 1, Algorithm: "token_window", WindowSeconds: 10, TokensPerWindow: 50},
+		},
+	}
+	ApplyDefaults(cfg)
+
+	for _, ep := range cfg.Endpoints {
+		if ep.Path == "/api" && ep.DefaultTokens != 1 {
+			t.Errorf("/api: default_tokens: got %d, want 1 (fallback)", ep.DefaultTokens)
+		}
+	}
+}
+
+func TestInheritFrom_TokenWindowFields(t *testing.T) {
+	parent := EndpointConfig{
+		Path: "/api", Algorithm: "token_window",
+		TokensPerWindow: 100, DefaultTokens: 5, WindowSeconds: 30,
+	}
+	child := EndpointConfig{Path: "/api/sub", Dynamic: true}
+	got := InheritFrom(child, parent)
+
+	if got.TokensPerWindow != 100 {
+		t.Errorf("tokens_per_window: got %d, want 100", got.TokensPerWindow)
+	}
+	if got.DefaultTokens != 5 {
+		t.Errorf("default_tokens: got %d, want 5", got.DefaultTokens)
+	}
+	if got.WindowSeconds != 30 {
+		t.Errorf("window_seconds: got %d, want 30", got.WindowSeconds)
+	}
+	if got.Algorithm != "token_window" {
+		t.Errorf("algorithm: got %q, want token_window", got.Algorithm)
+	}
+}
+
+func TestInheritFrom_TokenWindowFields_ChildKeepsOwn(t *testing.T) {
+	parent := EndpointConfig{TokensPerWindow: 100, DefaultTokens: 5}
+	child := EndpointConfig{Path: "/x", TokensPerWindow: 200, DefaultTokens: 10}
+	got := InheritFrom(child, parent)
+
+	if got.TokensPerWindow != 200 {
+		t.Errorf("tokens_per_window: got %d, want 200 (child's)", got.TokensPerWindow)
+	}
+	if got.DefaultTokens != 10 {
+		t.Errorf("default_tokens: got %d, want 10 (child's)", got.DefaultTokens)
+	}
+}
+
+func TestLoad_TokenWindow_Valid(t *testing.T) {
+	path := writeTemp(t, `
+endpoints:
+  - path: "/"
+    rate: 1
+  - path: "/api"
+    algorithm: token_window
+    tokens_per_window: 100
+    window_seconds: 10
+    default_tokens: 5
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, ep := range cfg.Endpoints {
+		if ep.Path == "/api" {
+			if ep.TokensPerWindow != 100 {
+				t.Errorf("tokens_per_window: got %d, want 100", ep.TokensPerWindow)
+			}
+			if ep.DefaultTokens != 5 {
+				t.Errorf("default_tokens: got %d, want 5", ep.DefaultTokens)
+			}
+		}
+	}
+}
+
+func TestLoad_TokenWindow_MissingTokensPerWindow(t *testing.T) {
+	path := writeTemp(t, `
+endpoints:
+  - path: "/"
+    algorithm: token_window
+    window_seconds: 10
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for token_window with tokens_per_window=0, got nil")
+	}
+}
+
+func TestLoad_TokenWindow_MissingWindowSeconds(t *testing.T) {
+	path := writeTemp(t, `
+endpoints:
+  - path: "/"
+    algorithm: token_window
+    tokens_per_window: 100
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for token_window with window_seconds=0, got nil")
+	}
+}

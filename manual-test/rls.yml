@@ -89,3 +89,13 @@ endpoints:
     algorithm: strict
     max_queue_size: 60
     queue_timeout: 3
+
+  # Token window: 100 tokens per 5s window, best-fit scheduling
+  # Small requests pass large ones; impossible requests get immediate 429
+  - path: "/tokens"
+    algorithm: token_window
+    scheduler: fifo
+    tokens_per_window: 100
+    window_seconds: 5
+    default_tokens: 1
+    max_queue_size: 60

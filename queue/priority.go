@@ -66,6 +66,27 @@ func (q *PriorityQueue) Pop() *Ticket {
 	return heap.Pop(&q.h).(*Ticket)
 }
 
+func (q *PriorityQueue) PopWhere(fn func(t *Ticket) bool) []*Ticket {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	// Pop all items in priority order, test predicate, collect matches,
+	// re-push non-matches. This ensures side-effecting predicates
+	// (e.g. TryConsume) favor highest-priority tickets first.
+	var matched, keep []*Ticket
+	for q.h.Len() > 0 {
+		t := heap.Pop(&q.h).(*Ticket)
+		if fn(t) {
+			matched = append(matched, t)
+		} else {
+			keep = append(keep, t)
+		}
+	}
+	for _, t := range keep {
+		heap.Push(&q.h, t)
+	}
+	return matched
+}
+
 func (q *PriorityQueue) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()

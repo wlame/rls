@@ -62,4 +62,9 @@ sleep 3
 banner "09 — DYNAMIC ENDPOINTS — hit undeclared paths, observe independent endpoints"
 /scripts/09-dynamic.sh
 
+sleep 3
+
+banner "10 — TOKEN WINDOW to /tokens (100 tokens/5s) — weighted requests, multi-window scheduling"
+/scripts/10-token-window.sh
+
 banner "All profiles complete."

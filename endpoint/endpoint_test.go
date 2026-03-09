@@ -27,6 +27,19 @@ func baseConfig(path string, rps float64) config.EndpointConfig {
 	}
 }
 
+func tokenWindowConfig(path string, capacity, windowSec, defaultTokens int) config.EndpointConfig {
+	return config.EndpointConfig{
+		Path:            path,
+		Algorithm:       "token_window",
+		Scheduler:       "fifo",
+		MaxQueueSize:    100,
+		Overflow:        "reject",
+		TokensPerWindow: capacity,
+		WindowSeconds:   windowSec,
+		DefaultTokens:   defaultTokens,
+	}
+}
+
 // --- Endpoint tests ---
 
 func TestEndpoint_SingleRequest_Returns200(t *testing.T) {
@@ -148,7 +161,7 @@ func TestEndpoint_PriorityHeader_Invalid(t *testing.T) {
 func TestBuildResponse_Fields(t *testing.T) {
 	cfg := baseConfig("/test", 5)
 	now := time.Now().Add(-50 * time.Millisecond) // simulated 50ms wait
-	resp := buildResponse(cfg, 3, now, nil)
+	resp := buildResponse(cfg, 3, now, nil, nil)
 
 	if !resp.OK {
 		t.Error("ok: want true")
@@ -190,7 +203,7 @@ func TestBuildResponse_AllConfigFields(t *testing.T) {
 		QueueTimeout:  5.5,
 		Dynamic:       false,
 	}
-	resp := buildResponse(cfg, 0, time.Now(), nil)
+	resp := buildResponse(cfg, 0, time.Now(), nil, nil)
 
 	if resp.Algorithm != "token_bucket" {
 		t.Errorf("algorithm: got %q", resp.Algorithm)
@@ -223,7 +236,7 @@ func TestBuildResponse_DynamicEndpoint(t *testing.T) {
 		Overflow:     "reject",
 		Dynamic:      true,
 	}
-	resp := buildResponse(cfg, 2, time.Now().Add(-100*time.Millisecond), nil)
+	resp := buildResponse(cfg, 2, time.Now().Add(-100*time.Millisecond), nil, nil)
 
 	if !resp.Dynamic {
 		t.Error("dynamic: want true for dynamic endpoint")
@@ -245,7 +258,7 @@ func TestBuildResponse_JSONContainsAllFields(t *testing.T) {
 		Algorithm: "token_bucket", MaxQueueSize: 500, Overflow: "reject",
 		BurstSize: 20, WindowSeconds: 60, QueueTimeout: 3, Dynamic: true,
 	}
-	resp := buildResponse(cfg, 5, time.Now().Add(-200*time.Millisecond), nil)
+	resp := buildResponse(cfg, 5, time.Now().Add(-200*time.Millisecond), nil, nil)
 
 	data, err := json.Marshal(resp)
 	if err != nil {
@@ -276,7 +289,7 @@ func TestBuildResponse_OmitsZeroOptionalFields(t *testing.T) {
 		Overflow:     "reject",
 		// BurstSize, WindowSeconds, QueueTimeout all zero
 	}
-	resp := buildResponse(cfg, 0, time.Now(), nil)
+	resp := buildResponse(cfg, 0, time.Now(), nil, nil)
 
 	if resp.BurstSize != 0 {
 		t.Errorf("burst_size: got %d, want 0", resp.BurstSize)
@@ -1031,5 +1044,455 @@ func TestRegistry_LongestPrefixWins(t *testing.T) {
 	}
 	if !ep.cfg.Dynamic {
 		t.Error("expected dynamic endpoint")
+	}
+}
+
+// --- Token window tests ---
+
+func TestEndpoint_TokenWindow_SingleRequest_WithinCapacity(t *testing.T) {
+	cfg := tokenWindowConfig("/tw", 100, 60, 1)
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/tw?tokens=40", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status: got %d, want 200", rr.Code)
+	}
+}
+
+func TestEndpoint_TokenWindow_ImpossibleCost_Immediate429(t *testing.T) {
+	cfg := tokenWindowConfig("/tw", 100, 60, 1)
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/tw?tokens=150", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Errorf("status: got %d, want 429", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "exceeds window capacity") {
+		t.Errorf("body should mention exceeds window capacity, got: %s", rr.Body.String())
+	}
+}
+
+func TestEndpoint_TokenWindow_QueryParam_Parsed(t *testing.T) {
+	cfg := tokenWindowConfig("/tw", 100, 60, 5)
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/tw?tokens=25", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rr.Code)
+	}
+
+	var resp Response
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp.TokensConsumed == nil || *resp.TokensConsumed != 25 {
+		t.Errorf("tokens_consumed: want 25, got %v", resp.TokensConsumed)
+	}
+}
+
+func TestEndpoint_TokenWindow_MissingTokensParam_UsesDefault(t *testing.T) {
+	cfg := tokenWindowConfig("/tw", 100, 60, 7)
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/tw", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rr.Code)
+	}
+
+	var resp Response
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp.TokensConsumed == nil || *resp.TokensConsumed != 7 {
+		t.Errorf("tokens_consumed: want 7 (default), got %v", resp.TokensConsumed)
+	}
+}
+
+func TestEndpoint_TokenWindow_InvalidTokensParam_UsesDefault(t *testing.T) {
+	cfg := tokenWindowConfig("/tw", 100, 60, 3)
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/tw?tokens=abc", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rr.Code)
+	}
+
+	var resp Response
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp.TokensConsumed == nil || *resp.TokensConsumed != 3 {
+		t.Errorf("tokens_consumed: want 3 (default), got %v", resp.TokensConsumed)
+	}
+}
+
+func TestEndpoint_TokenWindow_ClientDisconnect_HandlerReturns(t *testing.T) {
+	// 100 tokens, long window. Fill capacity so next request must wait.
+	cfg := tokenWindowConfig("/tw", 100, 600, 100)
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	// Consume all capacity.
+	req := httptest.NewRequest(http.MethodGet, "/tw?tokens=100", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	// Next request: will wait for next window. Cancel client context.
+	ctx, cancel := context.WithCancel(context.Background())
+	req2 := httptest.NewRequest(http.MethodGet, "/tw?tokens=50", nil).WithContext(ctx)
+	rr2 := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		ep.Handle(rr2, req2)
+		close(done)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case <-done:
+		// Handler returned — no goroutine leak.
+	case <-time.After(2 * time.Second):
+		t.Error("Handle() did not return after client context cancelled — goroutine leak")
+	}
+}
+
+// --- Token window response value tests ---
+
+func TestEndpoint_TokenWindow_ResponseValues(t *testing.T) {
+	cfg := tokenWindowConfig("/tw", 100, 600, 1)
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/tw?tokens=40", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rr.Code)
+	}
+
+	var resp Response
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+
+	if resp.TokensConsumed == nil || *resp.TokensConsumed != 40 {
+		t.Errorf("tokens_consumed: want 40, got %v", resp.TokensConsumed)
+	}
+	if resp.TokensRemaining == nil || *resp.TokensRemaining != 60 {
+		t.Errorf("tokens_remaining: want 60 (100-40), got %v", resp.TokensRemaining)
+	}
+	if resp.WindowCapacity == nil || *resp.WindowCapacity != 100 {
+		t.Errorf("window_capacity: want 100, got %v", resp.WindowCapacity)
+	}
+	if resp.WaitingForNextWindow == nil || *resp.WaitingForNextWindow != 0 {
+		t.Errorf("waiting_for_next_window: want 0, got %v", resp.WaitingForNextWindow)
+	}
+}
+
+func TestEndpoint_TokenWindow_FullyConsumedWindow(t *testing.T) {
+	cfg := tokenWindowConfig("/tw", 100, 600, 1)
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/tw?tokens=100", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rr.Code)
+	}
+
+	var resp Response
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+
+	if resp.TokensRemaining == nil || *resp.TokensRemaining != 0 {
+		t.Errorf("tokens_remaining: want 0 (fully consumed), got %v", resp.TokensRemaining)
+	}
+}
+
+func TestEndpoint_TokenWindow_NonTokenWindow_OmitsFields(t *testing.T) {
+	ep, err := New(baseConfig("/", 100))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	body := rr.Body.String()
+	for _, field := range []string{"tokens_consumed", "tokens_remaining", "window_capacity", "waiting_for_next_window"} {
+		if strings.Contains(body, field) {
+			t.Errorf("non-token-window response should not contain %q", field)
+		}
+	}
+}
+
+func TestEndpoint_TokenWindow_JSONRoundTrip(t *testing.T) {
+	consumed := 25
+	remaining := 75
+	capacity := 100
+	waiting := 3
+	resp := Response{
+		OK:                   true,
+		Endpoint:             "/tw",
+		TokensConsumed:       &consumed,
+		TokensRemaining:      &remaining,
+		WindowCapacity:       &capacity,
+		WaitingForNextWindow: &waiting,
+	}
+
+	data, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var got Response
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	if got.TokensConsumed == nil || *got.TokensConsumed != 25 {
+		t.Errorf("tokens_consumed: want 25, got %v", got.TokensConsumed)
+	}
+	if got.TokensRemaining == nil || *got.TokensRemaining != 75 {
+		t.Errorf("tokens_remaining: want 75, got %v", got.TokensRemaining)
+	}
+	if got.WindowCapacity == nil || *got.WindowCapacity != 100 {
+		t.Errorf("window_capacity: want 100, got %v", got.WindowCapacity)
+	}
+	if got.WaitingForNextWindow == nil || *got.WaitingForNextWindow != 3 {
+		t.Errorf("waiting_for_next_window: want 3, got %v", got.WaitingForNextWindow)
+	}
+}
+
+// --- Token window integration tests ---
+
+func TestEndpoint_TokenWindow_SmallRequestsPassLargeOnes(t *testing.T) {
+	// 100 tokens, 1s window. Send cost=80, then cost=50 (won't fit in 20 remaining),
+	// then cost=10 (fits). cost=10 must be served before cost=50.
+	cfg := tokenWindowConfig("/tw", 100, 1, 1)
+	cfg.MaxQueueSize = 50
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	// 1. Fill most of the window.
+	req1 := httptest.NewRequest(http.MethodGet, "/tw?tokens=80", nil)
+	rr1 := httptest.NewRecorder()
+	ep.Handle(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("req1 (cost=80): got %d, want 200", rr1.Code)
+	}
+
+	// 2. Send cost=50 in background — won't fit (50 > 20 remaining), blocks until window reset.
+	largeDone := make(chan struct{})
+	go func() {
+		req := httptest.NewRequest(http.MethodGet, "/tw?tokens=50", nil)
+		rr := httptest.NewRecorder()
+		ep.Handle(rr, req)
+		close(largeDone)
+	}()
+
+	// Let cost=50 ticket settle in queue.
+	time.Sleep(50 * time.Millisecond)
+
+	// 3. Send cost=10 — fits in remaining 20. Best-fit scheduling serves it immediately.
+	req3 := httptest.NewRequest(http.MethodGet, "/tw?tokens=10", nil)
+	rr3 := httptest.NewRecorder()
+	ep.Handle(rr3, req3)
+	if rr3.Code != http.StatusOK {
+		t.Fatalf("req3 (cost=10): got %d, want 200 — small request should pass large", rr3.Code)
+	}
+
+	// cost=50 should still be waiting (window hasn't reset yet).
+	select {
+	case <-largeDone:
+		t.Error("cost=50 completed before window reset — expected it to wait")
+	default:
+		// expected: cost=50 still blocked
+	}
+
+	// Wait for cost=50 to complete after window reset (~1s).
+	select {
+	case <-largeDone:
+	case <-time.After(3 * time.Second):
+		t.Error("cost=50 never completed — stuck in queue")
+	}
+}
+
+func TestEndpoint_TokenWindow_MultiWindow_BestFit(t *testing.T) {
+	// 100 tokens per 1s window. 7 requests cost=40, 20 requests cost=3.
+	// Total cost = 280 + 60 = 340. Needs ceil(340/100) = 4 windows.
+	// Best-fit packing: ~2×40 + 6×3 = 98 per window.
+	cfg := tokenWindowConfig("/tw", 100, 1, 1)
+	cfg.MaxQueueSize = 100
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	type result struct {
+		cost     int
+		status   int
+		duration time.Duration
+	}
+
+	start := time.Now()
+	var mu sync.Mutex
+	var results []result
+	var wg sync.WaitGroup
+
+	for i := 0; i < 7; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/tw?tokens=40", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+			mu.Lock()
+			results = append(results, result{cost: 40, status: rr.Code, duration: time.Since(start)})
+			mu.Unlock()
+		}()
+	}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest(http.MethodGet, "/tw?tokens=3", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+			mu.Lock()
+			results = append(results, result{cost: 3, status: rr.Code, duration: time.Since(start)})
+			mu.Unlock()
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(8 * time.Second):
+		t.Fatal("not all 27 requests completed within 8s")
+	}
+
+	// All 27 must complete with 200.
+	if len(results) != 27 {
+		t.Fatalf("expected 27 results, got %d", len(results))
+	}
+	for i, r := range results {
+		if r.status != http.StatusOK {
+			t.Errorf("result[%d] (cost=%d): got status %d, want 200", i, r.cost, r.status)
+		}
+	}
+
+	// Must span multiple windows — last request can't be in window 1.
+	sort.Slice(results, func(i, j int) bool { return results[i].duration < results[j].duration })
+	lastDuration := results[len(results)-1].duration
+	if lastDuration < 1*time.Second {
+		t.Errorf("last request served in %v — expected multi-window scheduling (>1s)", lastDuration)
+	}
+
+	// At most 2 large (cost=40) requests can fit per window (2×40=80 ≤ 100),
+	// so at most ~2 should complete in the first 800ms.
+	var largeInFirstWindow int
+	for _, r := range results {
+		if r.cost == 40 && r.duration < 800*time.Millisecond {
+			largeInFirstWindow++
+		}
+	}
+	if largeInFirstWindow > 3 { // lenient: 3 instead of 2 for timing tolerance
+		t.Errorf("too many large requests in first window: %d (expected ≤2 for 100-token window)", largeInFirstWindow)
+	}
+}
+
+func TestEndpoint_TokenWindow_AdmissionTimeout(t *testing.T) {
+	// 100 tokens per 60s window, queue_timeout=0.5s.
+	// Fill capacity, queue more, then new request should be rejected.
+	cfg := tokenWindowConfig("/tw", 100, 60, 1)
+	cfg.QueueTimeout = 0.5
+	cfg.MaxQueueSize = 100
+	ep, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Stop()
+
+	// Consume all window capacity.
+	req1 := httptest.NewRequest(http.MethodGet, "/tw?tokens=100", nil)
+	rr1 := httptest.NewRecorder()
+	ep.Handle(rr1, req1)
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("req1: got %d, want 200", rr1.Code)
+	}
+
+	// Queue several items to inflate pendingTokens → high estimated wait.
+	for i := 0; i < 3; i++ {
+		go func() {
+			req := httptest.NewRequest(http.MethodGet, "/tw?tokens=50", nil)
+			rr := httptest.NewRecorder()
+			ep.Handle(rr, req)
+		}()
+	}
+	time.Sleep(50 * time.Millisecond)
+
+	// New request: estimateWait = ceil(150/100) * 60s = 120s >> 0.5s → rejected.
+	req := httptest.NewRequest(http.MethodGet, "/tw?tokens=50", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Errorf("status: got %d, want 429 (admission timeout)", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "estimated wait exceeds timeout") {
+		t.Errorf("body should mention timeout, got: %s", rr.Body.String())
 	}
 }
