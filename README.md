@@ -109,7 +109,7 @@ server:
 # Defaults applied to any endpoint that omits a field
 defaults:
   scheduler: fifo          # fifo | lifo | priority | random
-  algorithm: strict        # strict | token_bucket | sliding_window
+  algorithm: strict        # strict | token_bucket | sliding_window | token_window
   unit: rps                # rps | rpm
   max_queue_size: 1000
   overflow: reject         # reject (429) | block (wait forever)
@@ -141,6 +141,12 @@ endpoints:
     scheduler: fifo
     algorithm: sliding_window
     window_seconds: 60
+
+  - path: "/llm"
+    algorithm: token_window
+    tokens_per_window: 10000   # token budget per window
+    window_seconds: 60         # window duration
+    default_tokens: 1          # cost when client omits ?tokens=
 ```
 
 ## Scheduling strategies
@@ -159,6 +165,7 @@ endpoints:
 | `strict`         | Exact interval — one response every 1/rate seconds |
 | `token_bucket`   | Allows bursting up to `burst_size`, then throttles to the target rate |
 | `sliding_window` | Counts requests in the last `window_seconds`; accurate for RPM-style limits |
+| `token_window`   | Each request carries a token cost; server guarantees no more than N tokens per time window |
 
 ## Response format
 
@@ -180,7 +187,7 @@ Every successful request returns JSON with the **full resolved configuration** �
 }
 ```
 
-Optional fields appear only when non-zero: `burst_size` (token_bucket), `window_seconds` (sliding_window), `queue_timeout`, `latency_compensation`, `network_latency_ms`, `dynamic`.
+Optional fields appear only when non-zero: `burst_size` (token_bucket), `window_seconds` (sliding_window), `queue_timeout`, `latency_compensation`, `network_latency_ms`, `dynamic`, and the token window fields below.
 
 | Field           | Description |
 |-----------------|-------------|
@@ -192,12 +199,17 @@ Optional fields appear only when non-zero: `burst_size` (token_bucket), `window_
 | `dynamic`       | `true` if this endpoint was auto-created from an unconfigured path |
 | `latency_compensation` | Configured latency compensation in ms |
 | `network_latency_ms` | One-way network latency computed from `X-Sent-At` header (present only when header is sent) |
+| `tokens_consumed` | Token cost charged for this request (token_window only) |
+| `tokens_remaining` | Tokens left in the current window after this request (token_window only) |
+| `window_capacity` | Total token budget per window (token_window only) |
+| `waiting_for_next_window` | Number of requests deferred to future windows (token_window only) |
 
 When the queue is full (`overflow: reject`) or the estimated wait exceeds `queue_timeout`, rls returns HTTP 429:
 
 ```json
 {"ok": false, "error": "queue full"}
 {"ok": false, "error": "estimated wait exceeds timeout"}
+{"ok": false, "error": "token cost 150 exceeds window capacity 100"}
 ```
 
 ### Dynamic endpoints (hierarchical paths)
@@ -272,6 +284,58 @@ curl -H "X-Sent-At: $(date +%s%3N)" http://localhost:8080/
 ```
 
 If the header is missing, unparseable, or the timestamp is in the future (clock skew), the field is omitted or clamped to 0.
+
+### Token window (weighted rate limiting)
+
+When different requests have different costs — for example, LLM API calls that consume varying numbers of tokens — use `token_window` to enforce a token budget per time window instead of a simple request count:
+
+```yaml
+endpoints:
+  - path: "/llm"
+    algorithm: token_window
+    tokens_per_window: 10000   # allow 10k tokens per minute
+    window_seconds: 60
+    default_tokens: 1          # cost when client omits ?tokens=
+    max_queue_size: 100
+```
+
+Clients pass the token cost as a query parameter:
+
+```bash
+# Request that costs 500 tokens
+curl http://localhost:8080/llm?tokens=500
+
+# Response:
+# {
+#   "ok": true,
+#   "endpoint": "/llm",
+#   "queued_for_ms": 0,
+#   "tokens_consumed": 500,
+#   "tokens_remaining": 9500,
+#   "window_capacity": 10000,
+#   "waiting_for_next_window": 0
+# }
+```
+
+**Best-fit scheduling**: requests that fit in the current window are served immediately. If a request's token cost exceeds the remaining capacity, it is deferred to the next window — but smaller requests behind it can still pass if they fit. This prevents large requests from blocking the entire queue.
+
+```
+Window capacity: 100 tokens
+  Request A: cost=80 → served (20 remaining)
+  Request B: cost=50 → deferred (doesn't fit in 20)
+  Request C: cost=10 → served immediately (fits in 20)
+  [window resets]
+  Request B: cost=50 → served (50 remaining)
+```
+
+**Impossible requests**: if a request's cost exceeds the entire window capacity, it is rejected immediately with HTTP 429 — it could never be served.
+
+```bash
+curl http://localhost:8080/llm?tokens=99999
+# {"ok": false, "error": "token cost 99999 exceeds window capacity 10000"}
+```
+
+Admission timeout (`queue_timeout` / `?timeout=N`) works with token_window too. The estimated wait is based on total pending token cost: `ceil(pendingTokens / capacity) * windowSeconds`.
 
 ## Client example (Python)
 

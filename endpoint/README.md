@@ -10,7 +10,7 @@ Each `Endpoint` owns:
 - A **dispatcher goroutine** — pulls from the queue after acquiring a rate-limit slot
 - A **work channel** — signals the dispatcher when a new ticket is pushed
 
-### Request lifecycle
+### Request lifecycle (standard algorithms)
 
 ```
 HTTP request → Handle()
@@ -21,6 +21,22 @@ HTTP request → Handle()
   5. Block on Ticket.Release
   6. Dispatcher: wait for work → lim.Wait() → queue.Pop() → ticket.Release
   7. Return JSON response
+```
+
+### Request lifecycle (token_window)
+
+```
+HTTP request → Handle()
+  1. Create Ticket with Cost from ?tokens=N (or default_tokens)
+  2. Reject immediately if cost > window capacity (429)
+  3. Admission timeout check based on pending token cost
+  4. Push to Queue (or 429 if full)
+  5. Track pending tokens (atomic counter)
+  6. Signal work channel
+  7. Block on Ticket.Release
+  8. Dispatcher: wait for work or window reset →
+     PopWhere(TryConsume) → release all fitting tickets
+  9. Return JSON response with token window fields
 ```
 
 ## Admission Timeout
@@ -35,6 +51,18 @@ Predictive queue rejection based on estimated wait time. Configured via `queue_t
 If the estimate exceeds the timeout, the request is rejected immediately with HTTP 429.
 
 **Per-request override**: the `?timeout=N` query parameter (float seconds) overrides the endpoint config. Use `?timeout=999` to effectively disable the check for a single request.
+
+## Token Window Dispatch
+
+When `algorithm: token_window` is configured, the endpoint uses a different dispatch loop and does **not** create a standard `Limiter`. Instead, it owns a `TokenWindow` capacity tracker.
+
+The `dispatchTokenWindow()` goroutine selects on two channels:
+- **`work`** — new ticket arrived
+- **`tokenWindow.ResetCh()`** — window capacity reset (ticker fired)
+
+On either signal, it calls `releaseTokenFitting()` which uses `queue.PopWhere(func(t) { return tokenWindow.TryConsume(t.Cost) })` to release all tickets that fit in the current window. This gives **best-fit scheduling**: small requests pass larger deferred ones when they fit in the remaining capacity.
+
+The `pendingTokens` atomic counter tracks the total token cost of all queued tickets, used by `estimateWait()` for admission timeout: `ceil(pendingTokens / capacity) * windowSeconds`.
 
 ## Overflow Modes
 
@@ -127,17 +155,19 @@ endpoints:
     rate: 10                  # requests per unit
     unit: rps                 # rps | rpm
     scheduler: fifo           # fifo | lifo | priority | random
-    algorithm: strict         # strict | token_bucket | sliding_window
+    algorithm: strict         # strict | token_bucket | sliding_window | token_window
     max_queue_size: 500       # max tickets in queue
     overflow: reject          # reject | block
     burst_size: 20            # token_bucket only
-    window_seconds: 60        # sliding_window only
+    window_seconds: 60        # sliding_window and token_window
     queue_timeout: 3          # admission timeout in seconds (0 = disabled)
+    tokens_per_window: 10000  # token_window only: token budget per window
+    default_tokens: 1         # token_window only: cost when client omits ?tokens=
 ```
 
 ### Config inheritance
 
-Dynamic endpoints inherit all zero-value fields from their nearest configured ancestor. The `InheritFrom(child, parent)` function fills these fields: `Rate`, `Unit`, `Scheduler`, `Algorithm`, `MaxQueueSize`, `Overflow`, `BurstSize`, `WindowSeconds`, `QueueTimeout`. The child's `Path` and `Dynamic` flag are always preserved.
+Dynamic endpoints inherit all zero-value fields from their nearest configured ancestor. The `InheritFrom(child, parent)` function fills these fields: `Rate`, `Unit`, `Scheduler`, `Algorithm`, `MaxQueueSize`, `Overflow`, `BurstSize`, `WindowSeconds`, `QueueTimeout`, `TokensPerWindow`, `DefaultTokens`. The child's `Path` and `Dynamic` flag are always preserved.
 
 ## Response Format
 
@@ -162,3 +192,25 @@ Every response includes the full resolved configuration. For dynamic endpoints, 
 ```
 
 Fields with zero values (`burst_size`, `window_seconds`, `queue_timeout`, `dynamic`) are omitted from JSON output.
+
+For `token_window` endpoints, the response includes additional fields:
+
+```json
+{
+  "ok": true,
+  "endpoint": "/llm",
+  "queued_for_ms": 0,
+  "algorithm": "token_window",
+  "tokens_consumed": 500,
+  "tokens_remaining": 9500,
+  "window_capacity": 10000,
+  "waiting_for_next_window": 3
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `tokens_consumed` | Token cost charged for this request |
+| `tokens_remaining` | Tokens left in the current window |
+| `window_capacity` | Total token budget per window |
+| `waiting_for_next_window` | Number of requests still queued (deferred to future windows) |

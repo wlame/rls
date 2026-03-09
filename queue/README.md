@@ -8,13 +8,24 @@ All schedulers implement the `Queue` interface:
 
 ```go
 type Queue interface {
-    Push(t *Ticket) bool   // enqueue; returns false when full
-    Pop() *Ticket          // dequeue next ticket (nil if empty)
-    Len() int              // current queue depth
+    Push(t *Ticket) bool                       // enqueue; returns false when full
+    Pop() *Ticket                              // dequeue next ticket (nil if empty)
+    PopWhere(fn func(t *Ticket) bool) []*Ticket // selective pop: remove all matching tickets
+    Len() int                                  // current queue depth
 }
 ```
 
-`Ticket` is the per-request handle. Its `Release` channel is used by the dispatcher to unblock the waiting HTTP handler.
+`Ticket` is the per-request handle. Its `Release` channel is used by the dispatcher to unblock the waiting HTTP handler. The `Cost` field carries the token cost for `token_window` endpoints (0 for other algorithms).
+
+### PopWhere
+
+`PopWhere` scans the queue and removes all tickets for which the predicate returns `true`, returning them in a slice. The predicate runs **under the queue's mutex** — this is intentional because the `token_window` algorithm uses a side-effecting predicate (`TryConsume`) that must be atomic with the removal.
+
+Scan order matches each queue type's natural serve order:
+- **FIFO**: front-to-back (oldest first)
+- **LIFO**: back-to-front (newest first)
+- **Priority**: highest priority first (pops all, tests predicate, re-pushes non-matches)
+- **Random**: arbitrary order
 
 ## Schedulers
 
