@@ -24,6 +24,7 @@ func ConnectAddr(socketPath string) (config.Config, <-chan []EndpointSnapshot, <
 	}
 
 	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 0, 1<<20), 1<<20) // 1MB buffer for large configs
 
 	// First message must be config.
 	if !scanner.Scan() {

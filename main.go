@@ -116,7 +116,11 @@ func main() {
 			return snaps
 		})
 		go hub.Run(ctx, hubEvents, hubLogs)
-		go attach.Serve(ctx, hub, attach.SocketPath(os.Getpid()))
+		go func() {
+			if err := attach.Serve(ctx, hub, attach.SocketPath(os.Getpid())); err != nil {
+				log.Printf("%s  attach: %v", now(), err)
+			}
+		}()
 
 		if err := tui.Run(cfg, tuiEvents, thresholds, tuiLogs, 0, nil, srv.Registry()); err != nil {
 			log.Fatalf("%s  tui error: %v", now(), err)
@@ -148,7 +152,11 @@ func main() {
 		return snaps
 	})
 	go hub.Run(ctx, rawEvents, rawLogCh)
-	go attach.Serve(ctx, hub, attach.SocketPath(os.Getpid()))
+	go func() {
+		if err := attach.Serve(ctx, hub, attach.SocketPath(os.Getpid())); err != nil {
+			log.Printf("%s  attach: %v", now(), err)
+		}
+	}()
 
 	log.Printf("%s  rls listening on %s:%d", now(), cfg.Server.Host, cfg.Server.Port)
 	go func() {

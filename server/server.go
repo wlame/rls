@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
+	"sync"
 	"time"
 
 	"github.com/wlame/rls/config"
@@ -16,8 +14,9 @@ import (
 
 // Server wraps the HTTP server and the endpoint registry.
 type Server struct {
-	http     *http.Server
-	registry *endpoint.Registry
+	http           *http.Server
+	registry       *endpoint.Registry
+	activeRequests sync.WaitGroup
 }
 
 // New creates a Server from cfg. Any endpoint.Option values are forwarded to every Endpoint.
@@ -29,6 +28,10 @@ func New(cfg config.Config, epOpts ...endpoint.Option) (*Server, error) {
 	registry, err := endpoint.NewRegistryWithOpts(cfg.Endpoints, regOpts, epOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("build registry: %w", err)
+	}
+
+	s := &Server{
+		registry: registry,
 	}
 
 	mux := http.NewServeMux()
@@ -43,49 +46,38 @@ func New(cfg config.Config, epOpts ...endpoint.Option) (*Server, error) {
 			})
 			return
 		}
+		s.activeRequests.Add(1)
+		defer s.activeRequests.Done()
 		ep.Handle(w, r)
 	})
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
-	s := &Server{
-		http: &http.Server{
-			Addr:    addr,
-			Handler: mux,
-		},
-		registry: registry,
+	s.http = &http.Server{
+		Addr:    addr,
+		Handler: mux,
 	}
 	return s, nil
 }
 
-// Start begins listening and blocks until the server stops.
-// It handles SIGINT/SIGTERM for graceful shutdown.
+// Start begins listening and blocks until the server is shut down.
+// Call Shutdown() from another goroutine to stop it gracefully.
 func (s *Server) Start() error {
-	done := make(chan error, 1)
-	go func() {
-		done <- s.http.ListenAndServe()
-	}()
-
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case err := <-done:
-		if err != nil && err != http.ErrServerClosed {
-			return err
-		}
+	err := s.http.ListenAndServe()
+	if err == http.ErrServerClosed {
 		return nil
-	case <-quit:
-		return s.Shutdown()
 	}
+	return err
 }
 
 // Shutdown gracefully drains the server with a 30-second timeout.
-// HTTP connections are drained first so in-flight requests complete,
-// then dispatchers are stopped.
+// 1. Stop accepting new connections (http.Shutdown).
+// 2. Wait for in-flight request handlers to finish.
+// 3. Stop dispatchers and limiters (StopAll).
 func (s *Server) Shutdown() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	err := s.http.Shutdown(ctx)
+	s.activeRequests.Wait()
 	s.registry.StopAll()
 	return err
 }

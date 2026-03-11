@@ -8,13 +8,12 @@ var (
 
 	// Endpoint list (left column)
 	selectedRowStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
-	normalRowStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("252"))
 	cursorStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("12"))
 
-	// Dot colours by age
-	dotGreen  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("●")  // < 500ms
-	dotYellow = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("●")  // 500ms – 2s
-	dotRed    = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("●")  // > 2s
+	// Dot colours by age (thresholds configurable via --tui-warn/--tui-crit, defaults 2s/5s)
+	dotGreen  = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("●")  // < warnAfter (default 2s)
+	dotYellow = lipgloss.NewStyle().Foreground(lipgloss.Color("3")).Render("●")  // warnAfter – critAfter (default 2s–5s)
+	dotRed    = lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("●")  // >= critAfter (default 5s)
 
 	// Queue counter (right-aligned in middle column)
 	counterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("240"))

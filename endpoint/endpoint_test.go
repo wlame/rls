@@ -1496,3 +1496,34 @@ func TestEndpoint_TokenWindow_AdmissionTimeout(t *testing.T) {
 		t.Errorf("body should mention timeout, got: %s", rr.Body.String())
 	}
 }
+
+func TestEndpoint_TokenWindow_SingleEventServed(t *testing.T) {
+	ch := make(chan Event, 100)
+	cfg := tokenWindowConfig("/tw", 100, 60, 1)
+	ep, err := New(cfg, WithEventSink(ch))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer ep.Stop()
+
+	req := httptest.NewRequest(http.MethodGet, "/tw?tokens=10", nil)
+	rr := httptest.NewRecorder()
+	ep.Handle(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", rr.Code)
+	}
+
+	// Drain events, count EventServed.
+	time.Sleep(50 * time.Millisecond)
+	var served int
+	for len(ch) > 0 {
+		ev := <-ch
+		if ev.Kind == EventServed {
+			served++
+		}
+	}
+	if served != 1 {
+		t.Errorf("expected exactly 1 EventServed, got %d", served)
+	}
+}

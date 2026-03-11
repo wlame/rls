@@ -74,7 +74,9 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config %q: %w", path, err)
 	}
 
-	applyServerDefaults(&cfg)
+	if err := applyServerDefaults(&cfg); err != nil {
+		return nil, err
+	}
 	ApplyDefaults(&cfg)
 
 	if err := validateEndpoints(cfg.Endpoints); err != nil {
@@ -83,9 +85,33 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// validateEndpoints checks algorithm-specific constraints.
+var (
+	validAlgorithms = map[string]bool{"strict": true, "token_bucket": true, "sliding_window": true, "token_window": true}
+	validSchedulers = map[string]bool{"fifo": true, "lifo": true, "priority": true, "random": true}
+	validUnits      = map[string]bool{"rps": true, "rpm": true}
+)
+
+// validateEndpoints checks per-endpoint constraints.
 func validateEndpoints(endpoints []EndpointConfig) error {
 	for _, ep := range endpoints {
+		if !validAlgorithm(ep.Algorithm) {
+			return fmt.Errorf("endpoint %q: unknown algorithm %q; valid: strict, token_bucket, sliding_window, token_window", ep.Path, ep.Algorithm)
+		}
+		if !validScheduler(ep.Scheduler) {
+			return fmt.Errorf("endpoint %q: unknown scheduler %q; valid: fifo, lifo, priority, random", ep.Path, ep.Scheduler)
+		}
+		if !validUnit(ep.Unit) {
+			return fmt.Errorf("endpoint %q: unknown unit %q; valid: rps, rpm", ep.Path, ep.Unit)
+		}
+		if ep.Algorithm != "token_window" && ep.Rate <= 0 {
+			return fmt.Errorf("endpoint %q: rate must be > 0, got %g", ep.Path, ep.Rate)
+		}
+		if ep.MaxQueueSize <= 0 {
+			return fmt.Errorf("endpoint %q: max_queue_size must be > 0, got %d", ep.Path, ep.MaxQueueSize)
+		}
+		if ep.QueueTimeout < 0 {
+			return fmt.Errorf("endpoint %q: queue_timeout must be >= 0, got %g", ep.Path, ep.QueueTimeout)
+		}
 		if ep.Algorithm == "token_window" {
 			if ep.TokensPerWindow <= 0 {
 				return fmt.Errorf("endpoint %q: token_window requires tokens_per_window > 0", ep.Path)
@@ -93,19 +119,30 @@ func validateEndpoints(endpoints []EndpointConfig) error {
 			if ep.WindowSeconds <= 0 {
 				return fmt.Errorf("endpoint %q: token_window requires window_seconds > 0", ep.Path)
 			}
+			if ep.DefaultTokens > ep.TokensPerWindow {
+				return fmt.Errorf("endpoint %q: default_tokens (%d) exceeds tokens_per_window (%d)", ep.Path, ep.DefaultTokens, ep.TokensPerWindow)
+			}
 		}
 	}
 	return nil
 }
 
-// applyServerDefaults fills in server-level defaults.
-func applyServerDefaults(cfg *Config) {
+func validAlgorithm(s string) bool { return validAlgorithms[s] }
+func validScheduler(s string) bool { return validSchedulers[s] }
+func validUnit(s string) bool      { return validUnits[s] }
+
+// applyServerDefaults fills in server-level defaults and validates port range.
+func applyServerDefaults(cfg *Config) error {
 	if cfg.Server.Host == "" {
 		cfg.Server.Host = "0.0.0.0"
 	}
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
+	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
+		return fmt.Errorf("server port %d out of range [1, 65535]", cfg.Server.Port)
+	}
+	return nil
 }
 
 // ApplyDefaults fills missing EndpointConfig fields from Defaults (with system fallback),
@@ -127,11 +164,11 @@ func ApplyDefaults(cfg *Config) {
 			{
 				Path:         "/",
 				Rate:         1,
-				Unit:         "rps",
-				Scheduler:    "fifo",
-				Algorithm:    "strict",
-				MaxQueueSize: 1000,
-				Overflow:     "reject",
+				Unit:         d.Unit,
+				Scheduler:    d.Scheduler,
+				Algorithm:    d.Algorithm,
+				MaxQueueSize: d.MaxQueueSize,
+				Overflow:     d.Overflow,
 			},
 		}, cfg.Endpoints...)
 	}
@@ -156,6 +193,9 @@ func ApplyDefaults(cfg *Config) {
 		}
 		if ep.Overflow == "" {
 			ep.Overflow = d.Overflow
+		}
+		if ep.QueueTimeout == 0 {
+			ep.QueueTimeout = d.QueueTimeout
 		}
 		if ep.LatencyCompensation == 0 {
 			ep.LatencyCompensation = d.LatencyCompensation

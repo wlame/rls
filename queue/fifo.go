@@ -31,7 +31,15 @@ func (q *FIFOQueue) Pop() *Ticket {
 		return nil
 	}
 	t := q.items[0]
+	q.items[0] = nil // GC hint
 	q.items = q.items[1:]
+	// Compact when usage drops below 1/4 of backing array capacity
+	// and the array has grown beyond maxSize.
+	if cap(q.items) > q.maxSize && len(q.items) < cap(q.items)/4 {
+		compact := make([]*Ticket, len(q.items))
+		copy(compact, q.items)
+		q.items = compact
+	}
 	return t
 }
 

@@ -126,8 +126,10 @@ func (e *Endpoint) releaseTokenFitting() {
 	})
 	for _, t := range released {
 		t.Release <- struct{}{}
-		atomic.AddInt64(&e.pendingTokens, -int64(t.Cost))
-		e.emit(Event{Kind: EventServed, Path: e.cfg.Path})
+		// Skip decrement for cancelled tickets — the handler already decremented.
+		if !t.IsCancelled() {
+			atomic.AddInt64(&e.pendingTokens, -int64(t.Cost))
+		}
 	}
 }
 
@@ -212,8 +214,12 @@ func (e *Endpoint) Handle(w http.ResponseWriter, r *http.Request) {
 	case <-r.Context().Done():
 		// Client disconnected. The ticket remains in the queue and the dispatcher
 		// will eventually pop and release it (harmless: Release is buffered).
-		// Note: pendingTokens is NOT decremented here because the ticket is still
-		// in the queue and will be decremented when the dispatcher releases it.
+		// Mark cancelled and decrement pendingTokens immediately so admission
+		// timeout estimates don't stay inflated by dead tickets.
+		ticket.Cancel()
+		if e.tokenWindow != nil {
+			atomic.AddInt64(&e.pendingTokens, -int64(ticket.Cost))
+		}
 		return
 	}
 

@@ -169,7 +169,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "r":
-		if len(m.endpoints) > 0 {
+		if len(m.endpoints) > 0 && m.selected < len(m.endpoints) {
 			st := &m.endpoints[m.selected]
 			st.served = 0
 			st.rejected = 0
@@ -186,7 +186,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.showInfo = !m.showInfo
 
 	case " ":
-		if len(m.endpoints) > 0 {
+		if len(m.endpoints) > 0 && m.selected < len(m.endpoints) {
 			path := m.endpoints[m.selected].cfg.Path
 			return m, injectCmd(m.serverAddr, path)
 		}
@@ -633,8 +633,9 @@ func (m Model) renderMidRow(st endpointState, width int) string {
 	queued := len(st.enqueuedAt)
 
 	// Right-aligned counter: " [N/M]"
-	counter := counterStyle.Render(fmt.Sprintf("[%d/%d]", queued, maxQ))
-	counterLen := utf8.RuneCountInString(fmt.Sprintf("[%d/%d]", queued, maxQ))
+	counterText := fmt.Sprintf("[%d/%d]", queued, maxQ)
+	counter := counterStyle.Render(counterText)
+	counterLen := utf8.RuneCountInString(counterText)
 
 	// Dots fill the remaining space.
 	dotsWidth := width - counterLen - 1 // 1 for space before counter

@@ -591,3 +591,189 @@ endpoints:
 		t.Fatal("expected error for token_window with window_seconds=0, got nil")
 	}
 }
+
+// --- Negative value validation tests (#5) ---
+
+func TestLoad_NegativeRate(t *testing.T) {
+	path := writeTemp(t, `
+endpoints:
+  - path: "/"
+    rate: -5
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for negative rate, got nil")
+	}
+}
+
+func TestLoad_NegativePort(t *testing.T) {
+	path := writeTemp(t, `
+server:
+  port: -1
+endpoints:
+  - path: "/"
+    rate: 1
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for negative port, got nil")
+	}
+}
+
+func TestLoad_PortTooHigh(t *testing.T) {
+	path := writeTemp(t, `
+server:
+  port: 70000
+endpoints:
+  - path: "/"
+    rate: 1
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for port > 65535, got nil")
+	}
+}
+
+func TestLoad_NegativeMaxQueueSize(t *testing.T) {
+	path := writeTemp(t, `
+endpoints:
+  - path: "/"
+    rate: 1
+    max_queue_size: -10
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for negative max_queue_size, got nil")
+	}
+}
+
+func TestLoad_NegativeQueueTimeout(t *testing.T) {
+	path := writeTemp(t, `
+endpoints:
+  - path: "/"
+    rate: 1
+    queue_timeout: -1
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for negative queue_timeout, got nil")
+	}
+}
+
+// --- Cross-field validation (#6) ---
+
+func TestLoad_DefaultTokensExceedsCapacity(t *testing.T) {
+	path := writeTemp(t, `
+endpoints:
+  - path: "/"
+    algorithm: token_window
+    tokens_per_window: 100
+    window_seconds: 10
+    default_tokens: 150
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for default_tokens > tokens_per_window, got nil")
+	}
+}
+
+// --- Enum validation (#9) ---
+
+func TestLoad_UnknownAlgorithm(t *testing.T) {
+	path := writeTemp(t, `
+endpoints:
+  - path: "/"
+    rate: 1
+    algorithm: foobar
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for unknown algorithm, got nil")
+	}
+}
+
+func TestLoad_UnknownScheduler(t *testing.T) {
+	path := writeTemp(t, `
+endpoints:
+  - path: "/"
+    rate: 1
+    scheduler: bogus
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for unknown scheduler, got nil")
+	}
+}
+
+func TestLoad_UnknownUnit(t *testing.T) {
+	path := writeTemp(t, `
+endpoints:
+  - path: "/"
+    rate: 1
+    unit: rph
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error for unknown unit, got nil")
+	}
+}
+
+// --- ApplyDefaults QueueTimeout (#7) ---
+
+func TestApplyDefaults_QueueTimeoutFromDefaults(t *testing.T) {
+	cfg := &Config{
+		Defaults: Defaults{QueueTimeout: 5},
+		Endpoints: []EndpointConfig{
+			{Path: "/", Rate: 1},
+			{Path: "/custom", Rate: 1, QueueTimeout: 3},
+		},
+	}
+	ApplyDefaults(cfg)
+
+	for _, ep := range cfg.Endpoints {
+		if ep.Path == "/" && ep.QueueTimeout != 5 {
+			t.Errorf("/: queue_timeout: got %f, want 5 (from defaults)", ep.QueueTimeout)
+		}
+		if ep.Path == "/custom" && ep.QueueTimeout != 3 {
+			t.Errorf("/custom: queue_timeout: got %f, want 3 (own value)", ep.QueueTimeout)
+		}
+	}
+}
+
+// --- Root endpoint uses Defaults (#16) ---
+
+func TestApplyDefaults_RootUsesUserDefaults(t *testing.T) {
+	cfg := &Config{
+		Defaults: Defaults{
+			Scheduler:    "lifo",
+			Algorithm:    "token_bucket",
+			Unit:         "rpm",
+			MaxQueueSize: 200,
+			Overflow:     "block",
+		},
+		Endpoints: []EndpointConfig{
+			{Path: "/api", Rate: 10},
+		},
+	}
+	ApplyDefaults(cfg)
+
+	root := cfg.Endpoints[0]
+	if root.Path != "/" {
+		t.Fatalf("first endpoint should be auto-inserted /, got %q", root.Path)
+	}
+	if root.Scheduler != "lifo" {
+		t.Errorf("root scheduler: got %q, want lifo (from user defaults)", root.Scheduler)
+	}
+	if root.Algorithm != "token_bucket" {
+		t.Errorf("root algorithm: got %q, want token_bucket (from user defaults)", root.Algorithm)
+	}
+	if root.Unit != "rpm" {
+		t.Errorf("root unit: got %q, want rpm (from user defaults)", root.Unit)
+	}
+	if root.MaxQueueSize != 200 {
+		t.Errorf("root max_queue_size: got %d, want 200 (from user defaults)", root.MaxQueueSize)
+	}
+	if root.Overflow != "block" {
+		t.Errorf("root overflow: got %q, want block (from user defaults)", root.Overflow)
+	}
+}

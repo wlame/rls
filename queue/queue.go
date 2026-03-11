@@ -2,6 +2,7 @@ package queue
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,8 +28,15 @@ type Ticket struct {
 	Release    chan struct{} // dispatcher closes/sends to release the waiting handler
 	Priority   int          // higher = served sooner; used by PriorityQueue only
 	EnqueuedAt time.Time
-	Cost       int // token cost for token_window algorithm; 0 for other algorithms
+	Cost       int   // token cost for token_window algorithm; 0 for other algorithms
+	cancelled  int32 // atomic; set to 1 when client disconnects
 }
+
+// Cancel marks the ticket as cancelled (client disconnected).
+func (t *Ticket) Cancel() { atomic.StoreInt32(&t.cancelled, 1) }
+
+// IsCancelled returns true if the ticket was cancelled.
+func (t *Ticket) IsCancelled() bool { return atomic.LoadInt32(&t.cancelled) == 1 }
 
 // Queue is the interface implemented by all scheduling strategies.
 type Queue interface {
